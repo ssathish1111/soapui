@@ -1,0 +1,400 @@
+package com.serversidegraphics.webservices.pcs;
+
+import javax.xml.bind.annotation.XmlElement;
+import javax.xml.bind.annotation.XmlRootElement;
+import javax.xml.bind.annotation.XmlType;
+
+@XmlRootElement(name = "ImageInformationResponse", namespace = "http://pcs.webservices.serversidegraphics.com/1")
+@XmlType(propOrder = {"imageInformationResult"})
+public class ImageInformationResponse {
+
+    private ImageInformationResult imageInformationResult;
+
+    @XmlElement(name = "ImageInformationResult", namespace = "http://pcs.webservices.serversidegraphics.com/1")
+    public ImageInformationResult getImageInformationResult() {
+        return imageInformationResult;
+    }
+
+    public void setImageInformationResult(ImageInformationResult imageInformationResult) {
+        this.imageInformationResult = imageInformationResult;
+    }
+}
+
+package com.serversidegraphics.webservices.pcs;
+
+import javax.xml.bind.annotation.XmlElement;
+import javax.xml.bind.annotation.XmlRootElement;
+import javax.xml.bind.annotation.XmlType;
+
+@XmlRootElement(name = "ImageInformationResult", namespace = "http://pcs.webservices.serversidegraphics.com/1")
+@XmlType(propOrder = {
+    "cardImageID", "designState", "errorCode", "transactionApprovalState", "cardPrinted", "cardMailed",
+    "imageCheckingStartTimeStamp", "imageCheckingEndTimeStamp", "transactionApprovalStateID", "aggregatorID",
+    "subscriberID", "productID", "designCreatedTimeStamp", "designStateTimeStamp", "designStateID",
+    "designTransferStateID", "designTransferTimeStamp", "emailSent", "publicImage", "transactionApprovalTimeStamp",
+    "transferredDefaultImage", "batchFileTimeStamp", "processed", "dataFields"
+})
+public class ImageInformationResult {
+
+    private String cardImageID;
+    private int designState;
+    private int errorCode;
+    private int transactionApprovalState;
+    private String cardPrinted;
+    private String cardMailed;
+    private String imageCheckingStartTimeStamp;
+    private String imageCheckingEndTimeStamp;
+    private int transactionApprovalStateID;
+    private int aggregatorID;
+    private int subcriberID;
+    private int productID;
+    private String designCreatedTimeStamp;
+    private String designStateTimeStamp;
+    private int designStateID;
+    private int designTransferStateID;
+    private String designTransferTimeStamp;
+    private boolean emailSent;
+    private boolean publicImage;
+    private String transactionApprovalTimeStamp;
+    private boolean transferredDefaultImage;
+    private String batchFileTimeStamp;
+    private String processed;
+    private String dataFields;
+
+    @XmlElement(name = "CardImageID", namespace = "http://pcs.webservices.serversidegraphics.com/1")
+    public String getCardImageID() {
+        return cardImageID;
+    }
+
+    public void setCardImageID(String cardImageID) {
+        this.cardImageID = cardImageID;
+    }
+
+    @XmlElement(name = "DesignState", namespace = "http://pcs.webservices.serversidegraphics.com/1")
+    public int getDesignState() {
+        return designState;
+    }
+
+    public void setDesignState(int designState) {
+        this.designState = designState;
+    }
+
+    @XmlElement(name = "ErrorCode", namespace = "http://pcs.webservices.serversidegraphics.com/1")
+    public int getErrorCode() {
+        return errorCode;
+    }
+
+    public void setErrorCode(int errorCode) {
+        this.errorCode = errorCode;
+    }
+
+    @XmlElement(name = "TransactionApprovalState", namespace = "http://pcs.webservices.serversidegraphics.com/1")
+    public int getTransactionApprovalState() {
+        return transactionApprovalState;
+    }
+
+    public void setTransactionApprovalState(int transactionApprovalState) {
+        this.transactionApprovalState = transactionApprovalState;
+    }
+
+    @XmlElement(name = "CardPrinted", namespace = "http://pcs.webservices.serversidegraphics.com/1")
+    public String getCardPrinted() {
+        return cardPrinted;
+    }
+
+    public void setCardPrinted(String cardPrinted) {
+        this.cardPrinted = cardPrinted;
+    }
+
+    @XmlElement(name = "CardMailed", namespace = "http://pcs.webservices.serversidegraphics.com/1")
+    public String getCardMailed() {
+        return cardMailed;
+    }
+
+    public void setCardMailed(String cardMailed) {
+        this.cardMailed = cardMailed;
+    }
+
+    @XmlElement(name = "ImageCheckingStartTimeStamp", namespace = "http://pcs.webservices.serversidegraphics.com/1")
+    public String getImageCheckingStartTimeStamp() {
+        return imageCheckingStartTimeStamp;
+    }
+
+    public void setImageCheckingStartTimeStamp(String imageCheckingStartTimeStamp) {
+        this.imageCheckingStartTimeStamp = imageCheckingStartTimeStamp;
+    }
+
+    @XmlElement(name = "ImageCheckingEndTimeStamp", namespace = "http://pcs.webservices.serversidegraphics.com/1")
+    public String getImageCheckingEndTimeStamp() {
+        return imageCheckingEndTimeStamp;
+    }
+
+    public void setImageCheckingEndTimeStamp(String imageCheckingEndTimeStamp) {
+        this.imageCheckingEndTimeStamp = imageCheckingEndTimeStamp;
+    }
+
+    @XmlElement(name = "TransactionApprovalStateID", namespace = "http://pcs.webservices.serversidegraphics.com/1")
+    public int getTransactionApprovalStateID() {
+        return transactionApprovalStateID;
+    }
+
+    public void setTransactionApprovalStateID(int transactionApprovalStateID) {
+        this.transactionApprovalStateID = transactionApprovalStateID;
+    }
+
+    @XmlElement(name = "AggregatorID", namespace = "http://pcs.webservices.serversidegraphics.com/1")
+    public int getAggregatorID() {
+        return aggregatorID;
+    }
+
+    public void setAggregatorID(int aggregatorID) {
+        this.aggregatorID = aggregatorID;
+    }
+
+    @XmlElement(name = "SubscriberID", namespace = "http://pcs.webservices.serversidegraphics.com/1")
+    public int getSubscriberID() {
+        return subcriberID;
+    }
+
+    public void setSubscriberID(int subcriberID) {
+        this.subcriberID = subcriberID;
+    }
+
+    @XmlElement(name = "ProductID", namespace = "http://pcs.webservices.serversidegraphics.com/1")
+    public int getProductID() {
+        return productID;
+    }
+
+    public void setProductID(int productID) {
+        this.productID = productID;
+    }
+
+    @XmlElement(name = "DesignCreatedTimeStamp", namespace = "http://pcs.webservices.serversidegraphics.com/1")
+    public String getDesignCreatedTimeStamp() {
+        return designCreatedTimeStamp;
+    }
+
+    public void setDesignCreatedTimeStamp(String designCreatedTimeStamp) {
+        this.designCreatedTimeStamp = designCreatedTimeStamp;
+    }
+
+    @XmlElement(name = "DesignStateTimeStamp", namespace = "http://pcs.webservices.serversidegraphics.com/1")
+    public String getDesignStateTimeStamp() {
+        return designStateTimeStamp;
+    }
+
+    public void setDesignStateTimeStamp(String designStateTimeStamp) {
+        this.designStateTimeStamp = designStateTimeStamp;
+    }
+
+    @XmlElement(name = "DesignStateID", namespace = "http://pcs.webservices.serversidegraphics.com/1")
+    public int getDesignStateID() {
+        return designStateID;
+    }
+
+    public void setDesignStateID(int designStateID) {
+        this.designStateID = designStateID;
+    }
+
+    @XmlElement(name = "DesignTransferStateID", namespace = "http://pcs.webservices.serversidegraphics.com/1")
+    public int getDesignTransferStateID() {
+        return designTransferStateID;
+    }
+
+    public void setDesignTransferStateID(int designTransferStateID) {
+        this.designTransferStateID = designTransferStateID;
+    }
+
+    @XmlElement(name = "DesignTransferTimeStamp", namespace = "http://pcs.webservices.serversidegraphics.com/1")
+    public String getDesignTransferTimeStamp() {
+        return designTransferTimeStamp;
+    }
+
+    public void setDesignTransferTimeStamp(String designTransferTimeStamp) {
+        this.designTransferTimeStamp = designTransferTimeStamp;
+    }
+
+    @XmlElement(name = "EmailSent", namespace = "http://pcs.webservices.serversidegraphics.com/1")
+    public boolean isEmailSent() {
+        return emailSent;
+    }
+
+    public void setEmailSent(boolean emailSent) {
+        this.emailSent = emailSent;
+    }
+
+    @XmlElement(name = "PublicImage", namespace = "http://pcs.webservices.serversidegraphics.com/1")
+    public boolean isPublicImage() {
+        return publicImage;
+    }
+
+    public void setPublicImage(boolean publicImage) {
+        this.publicImage = publicImage;
+    }
+
+    @XmlElement(name = "TransactionApprovalTimeStamp", namespace = "http://pcs.webservices.serversidegraphics.com/1")
+    public String getTransactionApprovalTimeStamp() {
+        return transactionApprovalTimeStamp;
+    }
+
+    public void setTransactionApprovalTimeStamp(String transactionApprovalTimeStamp) {
+        this.transactionApprovalTimeStamp = transactionApprovalTimeStamp;
+    }
+
+    @XmlElement(name = "TransferredDefaultImage", namespace = "http://pcs.webservices.serversidegraphics.com/1")
+    public boolean isTransferredDefaultImage() {
+        return transferredDefaultImage;
+    }
+
+    public void setTransferredDefaultImage(boolean transferredDefaultImage) {
+        this.transferredDefaultImage = transferredDefaultImage;
+    }
+
+    @XmlElement(name = "BatchFileTimeStamp", namespace = "http://pcs.webservices.serversidegraphics.com/1")
+    public String getBatchFileTimeStamp() {
+        return batchFileTimeStamp;
+    }
+
+    public void setBatchFileTimeStamp(String batchFileTimeStamp) {
+        this.batchFileTimeStamp = batchFileTimeStamp;
+    }
+
+    @XmlElement(name = "Processed", namespace = "http://pcs.webservices.serversidegraphics.com/1")
+    public String getProcessed() {
+        return processed;
+    }
+
+    public void setProcessed(String processed) {
+        this.processed = processed;
+    }
+
+    @XmlElement(name = "DataFields", namespace = "http://pcs.webservices.serversidegraphics.com/1")
+    public String getDataFields() {
+        return dataFields;
+    }
+
+    public void setDataFields(String dataFields) {
+        this.dataFields = dataFields;
+    }
+}
+
+
+
+package com.serversidegraphics.webservices.pcs;
+
+import javax.xml.bind.annotation.XmlElement;
+import javax.xml.bind.annotation.XmlRootElement;
+import javax.xml.bind.annotation.XmlType;
+
+@XmlRootElement(name = "Envelope", namespace = "http://schemas.xmlsoap.org/soap/envelope/")
+@XmlType(propOrder = {"body"})
+public class Envelope {
+
+    private Body body;
+
+    @XmlElement(name = "Body", namespace = "http://schemas.xmlsoap.org/soap/envelope/")
+    public Body getBody() {
+        return body;
+    }
+
+    public void setBody(Body body) {
+        this.body = body;
+    }
+}
+
+package com.serversidegraphics.webservices.pcs;
+
+import javax.xml.bind.annotation.XmlElement;
+import javax.xml.bind.annotation.XmlRootElement;
+
+@XmlRootElement(name = "Body", namespace = "http://schemas.xmlsoap.org/soap/envelope/")
+public class Body {
+
+    private ImageInformationResponse imageInformationResponse;
+
+    @XmlElement(name = "ImageInformationResponse", namespace = "http://pcs.webservices.serversidegraphics.com/1")
+    public ImageInformationResponse getImageInformationResponse() {
+        return imageInformationResponse;
+    }
+
+    public void setImageInformationResponse(ImageInformationResponse imageInformationResponse) {
+        this.imageInformationResponse = imageInformationResponse;
+    }
+}
+
+package com.serversidegraphics.webservices.pcs;
+
+import javax.xml.bind.annotation.XmlRegistry;
+
+@XmlRegistry
+public class ObjectFactory {
+
+    public ObjectFactory() {
+    }
+
+    public Envelope createEnvelope() {
+        return new Envelope();
+    }
+
+    public Body createBody() {
+        return new Body();
+    }
+
+    public ImageInformationResponse createImageInformationResponse() {
+        return new ImageInformationResponse();
+    }
+
+    public ImageInformationResult createImageInformationResult() {
+        return new ImageInformationResult();
+    }
+}
+
+import javax.xml.bind.JAXBContext;
+import javax.xml.bind.JAXBException;
+import javax.xml.bind.Unmarshaller;
+import java.io.StringReader;
+
+public class JAXBExample {
+
+    public static void main(String[] args) throws JAXBException {
+        String xmlString = "<soap:Envelope xmlns:soap=\"http://schemas.xmlsoap.org/soap/envelope/\" xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" xmlns:xsd=\"http://www.w3.org/2001/XMLSchema\">\n" +
+                "   <soap:Body>\n" +
+                "      <ImageInformationResponse xmlns=\"http://pcs.webservices.serversidegraphics.com/1\">\n" +
+                "         <ImageInformationResult>\n" +
+                "            <CardImageID>12345</CardImageID>\n" +
+                "            <DesignState>-1</DesignState>\n" +
+                "            <ErrorCode>2</ErrorCode>\n" +
+                "            <TransactionApprovalState>0</TransactionApprovalState>\n" +
+                "            <CardPrinted xsi:nil=\"true\"/>\n" +
+                "            <CardMailed xsi:nil=\"true\"/>\n" +
+                "            <ImageCheckingStartTimeStamp xsi:nil=\"true\"/>\n" +
+                "            <ImageCheckingEndTimeStamp xsi:nil=\"true\"/>\n" +
+                "            <TransactionApprovalStateID>0</TransactionApprovalStateID>\n" +
+                "            <AggregatorID>0</AggregatorID>\n" +
+                "            <SubscriberID>0</SubscriberID>\n" +
+                "            <ProductID>0</ProductID>\n" +
+                "            <DesignCreatedTimeStamp xsi:nil=\"true\"/>\n" +
+                "            <DesignStateTimeStamp xsi:nil=\"true\"/>\n" +
+                "            <DesignStateID>0</DesignStateID>\n" +
+                "            <DesignTransferStateID>0</DesignTransferStateID>\n" +
+                "            <DesignTransferTimeStamp xsi:nil=\"true\"/>\n" +
+                "            <EmailSent>false</EmailSent>\n" +
+                "            <PublicImage>false</PublicImage>\n" +
+                "            <TransactionApprovalTimeStamp xsi:nil=\"true\"/>\n" +
+                "            <TransferredDefaultImage>false</TransferredDefaultImage>\n" +
+                "            <BatchFileTimeStamp xsi:nil=\"true\"/>\n" +
+                "            <Processed xsi:nil=\"true\"/>\n" +
+                "            <DataFields/>\n" +
+                "         </ImageInformationResult>\n" +
+                "      </ImageInformationResponse>\n" +
+                "   </soap:Body>\n" +
+                "</soap:Envelope>";
+
+        JAXBContext context = JAXBContext.newInstance(Envelope.class);
+        Unmarshaller unmarshaller = context.createUnmarshaller();
+        StringReader reader = new StringReader(xmlString);
+        Envelope envelope = (Envelope) unmarshaller.unmarshal(reader);
+
+        System.out.println("CardImageID: " + envelope.getBody().getImageInformationResponse().getImageInformationResult().getCardImageID());
+    }
+}
