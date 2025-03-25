@@ -1,0 +1,219 @@
+<dependency>
+    <groupId>org.springframework.boot</groupId>
+    <artifactId>spring-boot-starter-web-services</artifactId>
+</dependency>
+<dependency>
+    <groupId>org.apache.httpcomponents</groupId>
+    <artifactId>httpclient</artifactId>
+</dependency>
+
+<plugin>
+    <groupId>org.codehaus.mojo</groupId>
+    <artifactId>jaxb2-maven-plugin</artifactId>
+    <version>2.5.0</version>
+    <executions>
+        <execution>
+            <id>generate-sources</id>
+            <phase>generate-sources</phase>
+            <goals>
+                <goal>xjc</goal>
+            </goals>
+            <configuration>
+                <wsdl>true</wsdl>
+                <schemaDirectory>${project.basedir}/src/main/resources/wsdl</schemaDirectory>
+                <schemaIncludes>
+                    <include>*.wsdl</include>
+                </schemaIncludes>
+                <packageName>com.example.wsdl</packageName>
+            </configuration>
+        </execution>
+    </executions>
+</plugin>
+
+
+import org.apache.http.HttpHost;
+import org.apache.http.auth.AuthScope;
+import org.apache.http.auth.UsernamePasswordCredentials;
+import org.apache.http.client.CredentialsProvider;
+import org.apache.http.impl.client.BasicCredentialsProvider;
+import org.apache.http.impl.client.HttpClientBuilder;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+import org.springframework.util.StringUtils;
+import org.springframework.ws.client.core.WebServiceTemplate;
+import org.springframework.ws.transport.http.HttpComponentsMessageSender;
+
+@Configuration
+public class WebServiceConfig {
+
+    @Value("${proxy.host}")
+    private String proxyHost;
+
+    @Value("${proxy.port}")
+    private int proxyPort;
+
+    @Value("${proxy.username}")
+    private String proxyUser;
+
+    @Value("${proxy.password}")
+    private String proxyPassword;
+
+    @Bean
+    public HttpComponentsMessageSender messageSender() {
+        return new HttpComponentsMessageSender(httpClient());
+    }
+
+    @Bean
+    public HttpClient httpClient() {
+        HttpClientBuilder builder = HttpClientBuilder.create()
+            .setProxy(new HttpHost(proxyHost, proxyPort));
+
+        // Add credentials if provided
+        if (StringUtils.hasText(proxyUser)) {
+            CredentialsProvider credsProvider = new BasicCredentialsProvider();
+            credsProvider.setCredentials(
+                new AuthScope(proxyHost, proxyPort),
+                new UsernamePasswordCredentials(proxyUser, proxyPassword)
+            );
+            builder.setDefaultCredentialsProvider(credsProvider);
+        }
+
+        return builder.build();
+    }
+
+    @Bean
+    public WebServiceTemplate webServiceTemplate() {
+        WebServiceTemplate template = new WebServiceTemplate();
+        template.setMessageSender(messageSender());
+        // Set marshaller/unmarshaller if using JAXB
+        // template.setMarshaller(...);
+        // template.setUnmarshaller(...);
+        return template;
+    }
+}
+
+
+import org.springframework.ws.client.core.WebServiceTemplate;
+import org.springframework.stereotype.Service;
+import com.example.wsdl.GetInformationRequest;
+import com.example.wsdl.GetInformationResponse;
+
+@Service
+public class InformationService {
+
+    private final WebServiceTemplate webServiceTemplate;
+
+    public InformationService(WebServiceTemplate webServiceTemplate) {
+        this.webServiceTemplate = webServiceTemplate;
+    }
+
+    public GetInformationResponse getInformation(String query) {
+        GetInformationRequest request = new GetInformationRequest();
+        request.setQuery(query);
+
+        return (GetInformationResponse) webServiceTemplate.marshalSendAndReceive(
+            "https://uat.serversidegraphics.com/pcs/services/information4.asmx",
+            request
+        );
+    }
+}
+
+
+import com.example.wsdl.GetInformationRequest;
+import com.example.wsdl.GetInformationResponse;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.InjectMocks;
+import org.mockito.Mock;
+import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.ws.client.core.WebServiceTemplate;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.when;
+
+@ExtendWith(MockitoExtension.class)
+class InformationServiceTest {
+
+    @Mock
+    private WebServiceTemplate webServiceTemplate;
+
+    @InjectMocks
+    private InformationService informationService;
+
+    @Test
+    void getInformation_shouldReturnResponse() {
+        // Mock request/response
+        GetInformationRequest expectedRequest = new GetInformationRequest();
+        expectedRequest.setQuery("test");
+       
+        GetInformationResponse mockResponse = new GetInformationResponse();
+        mockResponse.setResult("Success");
+
+        // Mock WebServiceTemplate behavior
+        when(webServiceTemplate.marshalSendAndReceive(
+            eq("https://uat.serversidegraphics.com/pcs/services/information4.asmx"),
+            eq(expectedRequest)
+        )).thenReturn(mockResponse);
+
+        // Test service method
+        GetInformationResponse response = informationService.getInformation("test");
+
+        // Verify
+        assertEquals("Success", response.getResult());
+    }
+}
+
+import org.apache.http.HttpHost;
+import org.apache.http.auth.AuthScope;
+import org.apache.http.auth.Credentials;
+import org.apache.http.client.CredentialsProvider;
+import org.apache.http.impl.client.HttpClientBuilder;
+import org.junit.jupiter.api.Test;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.ws.transport.http.HttpComponentsMessageSender;
+
+import static org.junit.jupiter.api.Assertions.*;
+
+@SpringBootTest
+class ProxyConfigurationIntegrationTest {
+
+    @Autowired
+    private HttpComponentsMessageSender messageSender;
+
+    @Value("${proxy.host}")
+    private String expectedProxyHost;
+
+    @Value("${proxy.port}")
+    private int expectedProxyPort;
+
+    @Test
+    void httpClient_shouldUseConfiguredProxy() {
+        HttpClient httpClient = messageSender.getHttpClient();
+        HttpHost proxy = (HttpHost) httpClient.getParams().getParameter(
+            ConnRoutePNames.DEFAULT_PROXY
+        );
+
+        assertNotNull(proxy, "Proxy should be configured");
+        assertEquals(expectedProxyHost, proxy.getHostName());
+        assertEquals(expectedProxyPort, proxy.getPort());
+    }
+
+    @Test
+    void httpClient_shouldHaveCredentialsWhenConfigured() {
+        CredentialsProvider provider = httpClient.getCredentialsProvider();
+       
+        // Only check credentials if they're configured in properties
+        if (StringUtils.hasText("${proxy.username}")) {
+            Credentials credentials = provider.getCredentials(
+                new AuthScope(expectedProxyHost, expectedProxyPort)
+            );
+           
+            assertNotNull(credentials, "Credentials should be configured");
+            assertEquals("${proxy.username}", credentials.getUserPrincipal().getName());
+        }
+    }
+}
