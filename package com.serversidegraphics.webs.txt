@@ -398,3 +398,152 @@ public class JAXBExample {
         System.out.println("CardImageID: " + envelope.getBody().getImageInformationResponse().getImageInformationResult().getCardImageID());
     }
 }
+
+
+
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.InjectMocks;
+import org.mockito.Mock;
+import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.integration.file.remote.RemoteFileTemplate;
+import org.springframework.messaging.Message;
+import org.springframework.messaging.support.MessageBuilder;
+
+import java.io.File;
+import java.io.FileOutputStream;
+import java.nio.file.Files;
+
+import static org.junit.jupiter.api.Assertions.*;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.*;
+
+@ExtendWith(MockitoExtension.class)
+class FileUploadServiceTest {
+
+    @Mock
+    private RemoteFileTemplate<Object> sftpRemoteFileTemplate;
+
+    @Mock
+    private Config config;
+
+    @Mock
+    private Config.Astra astraConfig;
+
+    @InjectMocks
+    private FileUploadService fileUploadService;
+
+    @Test
+    void sendOutput_SuccessfulUpload() throws Exception {
+        // Arrange
+        StringBuilder content = new StringBuilder("test content");
+        String fileName = "test.txt";
+        String remotePath = "/remote/path";
+        
+        when(config.getAstra()).thenReturn(astraConfig);
+        when(astraConfig.getAstraInboundPath()).thenReturn(remotePath);
+        when(sftpRemoteFileTemplate.send(any(Message.class), any())).thenReturn("remote/path/test.txt");
+
+        // Act
+        boolean result = fileUploadService.sendOutput(content, fileName);
+
+        // Assert
+        assertTrue(result);
+        verify(sftpRemoteFileTemplate).send(any(Message.class), any());
+        
+        // Cleanup
+        Files.deleteIfExists(new File(fileName).toPath());
+    }
+
+    @Test
+    void sendOutput_SFTPFailure_ThrowsException() {
+        // Arrange
+        StringBuilder content = new StringBuilder("test content");
+        String fileName = "test.txt";
+        String remotePath = "/remote/path";
+        
+        when(config.getAstra()).thenReturn(astraConfig);
+        when(astraConfig.getAstraInboundPath()).thenReturn(remotePath);
+        when(sftpRemoteFileTemplate.send(any(Message.class), any()))
+            .thenThrow(new RuntimeException("SFTP error"));
+
+        // Act & Assert
+        assertThrows(AstraFileInboundException.class, () -> {
+            fileUploadService.sendOutput(content, fileName);
+        });
+        
+        // Verify local file is cleaned up
+        assertFalse(new File(fileName).exists());
+    }
+
+    @Test
+    void sendOutput_FileCreationFailure_ThrowsException() {
+        // Arrange
+        StringBuilder content = new StringBuilder("test content");
+        String fileName = "/invalid/path/test.txt"; // Invalid path
+        
+        // Act & Assert
+        assertThrows(AstraFileInboundException.class, () -> {
+            fileUploadService.sendOutput(content, fileName);
+        });
+    }
+
+    @Test
+    void sendOutput_NullInput_ThrowsException() {
+        // Act & Assert
+        assertThrows(IllegalArgumentException.class, () -> {
+            fileUploadService.sendOutput(null, "file.txt");
+        });
+        
+        assertThrows(IllegalArgumentException.class, () -> {
+            fileUploadService.sendOutput(new StringBuilder(), null);
+        });
+    }
+
+    @Test
+    void sendOutput_VerifyLocalFileCleanup() throws Exception {
+        // Arrange
+        StringBuilder content = new StringBuilder("test content");
+        String fileName = "test_cleanup.txt";
+        String remotePath = "/remote/path";
+        
+        when(config.getAstra()).thenReturn(astraConfig);
+        when(astraConfig.getAstraInboundPath()).thenReturn(remotePath);
+        when(sftpRemoteFileTemplate.send(any(Message.class), any()))
+            .thenThrow(new RuntimeException("SFTP error"));
+
+        // Act
+        try {
+            fileUploadService.sendOutput(content, fileName);
+        } catch (AstraFileInboundException e) {
+            // Expected
+        }
+
+        // Assert
+        assertFalse(new File(fileName).exists(), "Local file should be deleted");
+    }
+
+    @Test
+    void sendOutput_VerifyFileContent() throws Exception {
+        // Arrange
+        String testContent = "test content";
+        StringBuilder content = new StringBuilder(testContent);
+        String fileName = "test_content.txt";
+        String remotePath = "/remote/path";
+        
+        when(config.getAstra()).thenReturn(astraConfig);
+        when(astraConfig.getAstraInboundPath()).thenReturn(remotePath);
+        when(sftpRemoteFileTemplate.send(any(Message.class), any())).thenReturn("remote/path/test.txt");
+
+        // Act
+        fileUploadService.sendOutput(content, fileName);
+
+        // Assert
+        File tempFile = new File(fileName);
+        assertTrue(tempFile.exists());
+        assertEquals(testContent, Files.readString(tempFile.toPath()));
+        
+        // Cleanup
+        Files.deleteIfExists(tempFile.toPath());
+    }
+}
