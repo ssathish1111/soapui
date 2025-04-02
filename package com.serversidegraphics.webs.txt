@@ -647,3 +647,95 @@ class ThalesFileReaderTest {
             thalesFileReader.readFileFromThales("TEST_FILE_NAME_1234567890"));
     }
 }
+import static org.junit.jupiter.api.Assertions.*;
+import static org.mockito.Mockito.*;
+
+import java.util.Arrays;
+import java.util.List;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.mockito.InjectMocks;
+import org.mockito.Mock;
+import org.mockito.junit.jupiter.MockitoExtension;
+import org.junit.jupiter.api.extension.ExtendWith;
+
+@ExtendWith(MockitoExtension.class)
+class FileServiceTest {
+
+    @Mock
+    private Config config;
+    
+    @Mock
+    private Config.Astra astra;
+    
+    @Mock
+    private SftpRemoteFileTemplate sftpRemoteFileTemplate;
+    
+    @Mock
+    private Session<ChannelSftp.LsEntry> session;
+    
+    @InjectMocks
+    private YourClassUnderTest fileService; // Replace with your actual class name
+
+    private final String testPath = "/test/path";
+
+    @BeforeEach
+    void setUp() {
+        when(config.getAstra()).thenReturn(astra);
+        when(astra.getAstraOutboundPath()).thenReturn(testPath);
+    }
+
+    @Test
+    void getFilesNameList_shouldReturnFileNames_whenFilesExist() throws Exception {
+        // Arrange
+        DirEntry file1 = mock(DirEntry.class);
+        DirEntry file2 = mock(DirEntry.class);
+        
+        when(file1.getFilename()).thenReturn("file1.txt");
+        when(file2.getFilename()).thenReturn("file2.txt");
+        
+        when(sftpRemoteFileTemplate.execute(any())).thenAnswer(invocation -> {
+            SessionCallback<DirEntry[], ChannelSftp.LsEntry> callback = invocation.getArgument(0);
+            return callback.doInSession(session);
+        });
+        
+        when(session.list(testPath)).thenReturn(new DirEntry[]{file1, file2});
+
+        // Act
+        List<String> result = fileService.getFilesNameList();
+
+        // Assert
+        assertEquals(2, result.size());
+        assertTrue(result.contains("file1.txt"));
+        assertTrue(result.contains("file2.txt"));
+    }
+
+    @Test
+    void getFilesNameList_shouldReturnEmptyList_whenNoFilesExist() throws Exception {
+        // Arrange
+        when(sftpRemoteFileTemplate.execute(any())).thenAnswer(invocation -> {
+            SessionCallback<DirEntry[], ChannelSftp.LsEntry> callback = invocation.getArgument(0);
+            return callback.doInSession(session);
+        });
+        
+        when(session.list(testPath)).thenReturn(new DirEntry[0]);
+
+        // Act
+        List<String> result = fileService.getFilesNameList();
+
+        // Assert
+        assertTrue(result.isEmpty());
+    }
+
+    @Test
+    void getFilesNameList_shouldReturnEmptyList_whenExceptionOccurs() throws Exception {
+        // Arrange
+        when(sftpRemoteFileTemplate.execute(any())).thenThrow(new RuntimeException("SFTP error"));
+
+        // Act
+        List<String> result = fileService.getFilesNameList();
+
+        // Assert
+        assertTrue(result.isEmpty());
+    }
+}
