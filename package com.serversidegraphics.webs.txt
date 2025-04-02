@@ -547,3 +547,103 @@ class FileUploadServiceTest {
         Files.deleteIfExists(tempFile.toPath());
     }
 }
+
+
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.InjectMocks;
+import org.mockito.Mock;
+import org.mockito.junit.jupiter.MockitoExtension;
+
+import java.io.InputStream;
+import java.util.Arrays;
+import java.util.Collections;
+
+import static org.junit.jupiter.api.Assertions.*;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.Mockito.*;
+
+@ExtendWith(MockitoExtension.class)
+class ThalesFileReaderTest {
+
+    @Mock
+    private RemoteFileTemplate<Object> sftpRemoteFileTemplate;
+
+    @Mock
+    private RemoteFileTemplate.SessionCallback<SomeObject, Object> sessionCallback;
+
+    @Mock
+    private InputStream inputStream;
+
+    @InjectMocks
+    private ThalesFileReader thalesFileReader;
+
+    @Test
+    void readFileFromThales_Success() throws Exception {
+        // Arrange
+        String fileName = "TEST_FILE_NAME_1234567890";
+        when(thalesFileReader.getFilesNameList())
+            .thenReturn(Arrays.asList("TEST_FILE_NAME_1234567890.xml"));
+        when(sftpRemoteFileTemplate.execute(any()))
+            .thenAnswer(invocation -> {
+                try (InputStream is = inputStream) {
+                    return new SomeObject(); // Mock return object
+                }
+            });
+
+        // Act
+        SomeObject result = thalesFileReader.readFileFromThales(fileName);
+
+        // Assert
+        assertNotNull(result);
+        verify(sftpRemoteFileTemplate).execute(any());
+    }
+
+    @Test
+    void readFileFromThales_FileNameTooShort() {
+        assertThrows(IllegalArgumentException.class, () -> 
+            thalesFileReader.readFileFromThales("short"));
+    }
+
+    @Test
+    void readFileFromThales_NoMatchingFiles() {
+        when(thalesFileReader.getFilesNameList())
+            .thenReturn(Arrays.asList("OTHER_FILE.xml"));
+        
+        assertNull(thalesFileReader.readFileFromThales("TEST_FILE_NAME_1234567890"));
+    }
+
+    @Test
+    void readFileFromThales_NullFileNameList() {
+        when(thalesFileReader.getFilesNameList()).thenReturn(null);
+        
+        assertNull(thalesFileReader.readFileFromThales("TEST_FILE_NAME_1234567890"));
+    }
+
+    @Test
+    void readFileFromThales_FileNotFoundInThales() throws Exception {
+        when(thalesFileReader.getFilesNameList())
+            .thenReturn(Arrays.asList("TEST_FILE_NAME_1234567890.xml"));
+        when(sftpRemoteFileTemplate.execute(any()))
+            .thenThrow(new RuntimeException("File not found"));
+
+        assertThrows(AstraFileOutboundException.class, () ->
+            thalesFileReader.readFileFromThales("TEST_FILE_NAME_1234567890"));
+    }
+
+    @Test
+    void readFileFromThales_ParsingError() throws Exception {
+        when(thalesFileReader.getFilesNameList())
+            .thenReturn(Arrays.asList("TEST_FILE_NAME_1234567890.xml"));
+        when(sftpRemoteFileTemplate.execute(any()))
+            .thenAnswer(invocation -> {
+                try (InputStream is = inputStream) {
+                    throw new RuntimeException("Parsing error");
+                }
+            });
+
+        assertThrows(AstraFileOutboundException.class, () ->
+            thalesFileReader.readFileFromThales("TEST_FILE_NAME_1234567890"));
+    }
+}
