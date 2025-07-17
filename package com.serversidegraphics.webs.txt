@@ -738,4 +738,212 @@ class FileServiceTest {
         // Assert
         assertTrue(result.isEmpty());
     }
+Here's the complete solution for mapping the provided JSON structure with nested objects and arrays, including handling for invalid data types:
+
+### 1. Oracle Database Mapping Configuration
+
+```sql
+-- Clear previous mappings if needed
+TRUNCATE TABLE json_field_mapping;
+
+-- Insert new mappings for the given JSON structure
+INSERT INTO json_field_mapping (source_pointer, target_field, data_type, default_value) 
+VALUES 
+  ('/id', 'user_id', 'NUMBER', '0'),
+  ('/name', 'full_name', 'STRING', 'Unknown'),
+  ('/address/city', 'city', 'STRING', ''),
+  ('/phoneNumber/0/number', 'primary_phone', 'STRING', ''),
+  ('/phoneNumber/0/type', 'phone_type', 'STRING', 'mobile'),
+  ('/phoneNumber', 'phone_numbers', 'ARRAY', '[]');
+```
+
+### 2. Enhanced Transformation Service
+
+```java
+@Service
+public class JsonTransformerService {
+    // ... (previous dependencies and constructor)
+
+    private void applyMappings(JsonNode source, ObjectNode target, List<FieldMapping> mappings) {
+        for (FieldMapping mapping : mappings) {
+            try {
+                // Special handling for arrays
+                if ("ARRAY".equalsIgnoreCase(mapping.getDataType())) {
+                    handleArrayField(source, target, mapping);
+                    continue;
+                }
+                
+                JsonNode value = source.at(mapping.getSourcePointer());
+                
+                if (value.isMissingNode() || value.isNull()) {
+                    applyDefaultValue(target, mapping);
+                } else {
+                    applyValueConversion(target, mapping, value);
+                }
+            } catch (Exception e) {
+                applyDefaultValue(target, mapping);
+            }
+        }
+    }
+
+    private void handleArrayField(JsonNode source, ObjectNode target, FieldMapping mapping) {
+        JsonNode arrayNode = source.at(mapping.getSourcePointer());
+        ArrayNode targetArray = objectMapper.createArrayNode();
+        
+        if (arrayNode.isArray()) {
+            for (JsonNode item : arrayNode) {
+                if (item.isObject()) {
+                    ObjectNode phoneNode = objectMapper.createObjectNode();
+                    if (item.has("number")) {
+                        phoneNode.put("number", item.get("number").asText());
+                    }
+                    if (item.has("type")) {
+                        phoneNode.put("type", item.get("type").asText());
+                    }
+                    targetArray.add(phoneNode);
+                }
+            }
+        }
+        
+        target.set(mapping.getTargetField(), targetArray);
+    }
+
+    private void applyValueConversion(ObjectNode target, FieldMapping mapping, JsonNode value) {
+        switch (mapping.getDataType().toUpperCase()) {
+            case "NUMBER":
+                if (value.isTextual()) {
+                    try {
+                        target.put(mapping.getTargetField(), Long.parseLong(value.asText()));
+                    } catch (NumberFormatException e) {
+                        target.put(mapping.getTargetField(), mapping.getDefaultValue());
+                    }
+                } else {
+                    target.put(mapping.getTargetField(), value.asLong());
+                }
+                break;
+                
+            case "STRING":
+                target.put(mapping.getTargetField(), value.asText());
+                break;
+                
+            case "ARRAY":
+                // Handled separately in handleArrayField
+                break;
+                
+            default:
+                target.set(mapping.getTargetField(), value);
+        }
+    }
+    
+    // ... (rest of the service remains same)
 }
+```
+
+### 3. Expected Output Structure
+
+For the provided input JSON, the transformed output will be:
+
+```json
+[
+  {
+    "user_id": 123,
+    "full_name": "John Doe",
+    "city": "New York",
+    "primary_phone": "",
+    "phone_type": "mobile",
+    "phone_numbers": []
+  },
+  {
+    "user_id": 0,
+    "full_name": "sath",
+    "city": "ind",
+    "primary_phone": "12344",
+    "phone_type": "mobile",
+    "phone_numbers": [
+      {
+        "number": "12344",
+        "type": "mobile"
+      }
+    ]
+  },
+  {
+    "user_id": 456,
+    "full_name": "Alice",
+    "city": "London",
+    "primary_phone": "12344",
+    "phone_type": "mobile",
+    "phone_numbers": [
+      {
+        "number": "12344",
+        "type": "mobile"
+      }
+    ]
+  }
+]
+```
+
+### 4. Key Handling Scenarios
+
+1. **Invalid Number Handling**:
+   - The invalid ID `"s"` falls back to default value `0`
+   - String `"456"` gets successfully converted to number
+
+2. **Phone Number Array**:
+   - Full array is preserved in `phone_numbers` field
+   - First phone number's details are also extracted to top-level fields
+
+3. **Missing Fields**:
+   - First object without phone numbers gets empty array and default values
+   - Default values come from database configuration
+
+4. **Nested Object Handling**:
+   - Address city is properly extracted from nested object
+   - Phone number details are extracted from array objects
+
+### 5. Additional Configuration Options
+
+To handle more complex cases, you can extend the database configuration:
+
+```sql
+-- Add mapping for secondary phone numbers
+INSERT INTO json_field_mapping (source_pointer, target_field, data_type) 
+VALUES ('/phoneNumber/1/number', 'secondary_phone', 'STRING');
+
+-- Add validation rules
+ALTER TABLE json_field_mapping ADD (
+    validation_regex VARCHAR2(200),
+    is_required NUMBER(1) DEFAULT 0
+);
+
+-- Update phone number validation
+UPDATE json_field_mapping 
+SET validation_regex = '^[0-9]{10}$', 
+    is_required = 1
+WHERE target_field IN ('primary_phone', 'secondary_phone');
+```
+
+### 6. Enhanced Validation Logic
+
+Add this to your service:
+
+```java
+private boolean isValidField(FieldMapping mapping, String value) {
+    if (mapping.getIsRequired() == 1 && (value == null || value.isEmpty())) {
+        return false;
+    }
+    
+    if (mapping.getValidationRegex() != null) {
+        return value.matches(mapping.getValidationRegex());
+    }
+    
+    return true;
+}
+```
+
+This solution provides:
+- Complete mapping for the given JSON structure
+- Robust handling of invalid data
+- Preservation of array structures
+- Extraction of specific array elements to top-level fields
+- Configurable default values and validation
+- Type conversion with fallback behavior
