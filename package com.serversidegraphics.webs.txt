@@ -947,3 +947,94 @@ This solution provides:
 - Extraction of specific array elements to top-level fields
 - Configurable default values and validation
 - Type conversion with fallback behavior
+
+@Service
+public class JsonTransformerService {
+    
+    private final FieldMappingRepository mappingRepository;
+    private final ObjectMapper objectMapper;
+    
+    public JsonTransformerService(FieldMappingRepository mappingRepository) {
+        this.mappingRepository = mappingRepository;
+        this.objectMapper = new ObjectMapper();
+        this.objectMapper.registerModule(new JavaTimeModule());
+        this.objectMapper.disable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS);
+    }
+    
+    public void transformJson(Path inputPath, Path outputPath) throws IOException {
+        List<FieldMapping> mappings = mappingRepository.findAllOrdered();
+        
+        try (JsonParser parser = objectMapper.getFactory().createParser(inputPath.toFile());
+             JsonGenerator generator = objectMapper.getFactory().createGenerator(outputPath.toFile(), JsonEncoding.UTF8)) {
+            
+            generator.useDefaultPrettyPrinter();
+            
+            if (parser.nextToken() != JsonToken.START_ARRAY) {
+                throw new JsonParseException(parser, "Root must be a JSON array");
+            }
+            
+            generator.writeStartArray();
+            
+            while (parser.nextToken() == JsonToken.START_OBJECT) {
+                JsonNode sourceNode = objectMapper.readTree(parser);
+                ObjectNode targetNode = objectMapper.createObjectNode();
+                
+                applyMappings(sourceNode, targetNode, mappings);
+                generator.writeTree(targetNode);
+            }
+            
+            generator.writeEndArray();
+        }
+    }
+    
+    private void applyMappings(JsonNode source, ObjectNode target, List<FieldMapping> mappings) {
+        for (FieldMapping mapping : mappings) {
+            JsonNode value = source.at(mapping.getSourcePointer());
+            
+            if (value.isMissingNode() || value.isNull()) {
+                applyDefaultValue(target, mapping);
+            } else {
+                applyValueConversion(target, mapping, value);
+            }
+        }
+    }
+    
+    private void applyValueConversion(ObjectNode target, FieldMapping mapping, JsonNode value) {
+        try {
+            switch (mapping.getDataType().toUpperCase()) {
+                case "NUMBER":
+                    target.put(mapping.getTargetField(), value.asLong());
+                    break;
+                case "STRING":
+                    target.put(mapping.getTargetField(), value.asText());
+                    break;
+                case "BOOLEAN":
+                    target.put(mapping.getTargetField(), value.asBoolean());
+                    break;
+                case "DATE":
+                    LocalDate date = LocalDate.parse(value.asText());
+                    target.put(mapping.getTargetField(), date.toString());
+                    break;
+                default:
+                    target.set(mapping.getTargetField(), value);
+            }
+        } catch (Exception e) {
+            applyDefaultValue(target, mapping);
+        }
+    }
+    
+    private void applyDefaultValue(ObjectNode target, FieldMapping mapping) {
+        if (mapping.getDefaultValue() != null) {
+            switch (mapping.getDataType().toUpperCase()) {
+                case "NUMBER":
+                    target.put(mapping.getTargetField(), Long.parseLong(mapping.getDefaultValue()));
+                    break;
+                case "BOOLEAN":
+                    target.put(mapping.getTargetField(), Boolean.parseBoolean(mapping.getDefaultValue()));
+                    break;
+                default:
+                    target.put(mapping.getTargetField(), mapping.getDefaultValue());
+            }
+        }
+    }
+}
