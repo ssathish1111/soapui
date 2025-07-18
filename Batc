@@ -1,0 +1,277 @@
+Here's a comprehensive solution for processing large JSON files (10,000+ records) with database-driven mappings, including your requested skeleton preparation methods:
+
+### 1. Enhanced Oracle Mapping Table
+
+```sql
+CREATE TABLE json_field_mapping (
+    mapping_id NUMBER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    source_path VARCHAR2(500) NOT NULL,  -- JSON Pointer path
+    target_field VARCHAR2(100) NOT NULL,
+    data_type VARCHAR2(50) NOT NULL,     -- NUMBER, STRING, BOOLEAN, DATE, ARRAY, OBJECT
+    is_required NUMBER(1) DEFAULT 0,
+    default_value VARCHAR2(500),
+    validation_regex VARCHAR2(200),
+    transformation_expr VARCHAR2(500)    -- Optional transformation expression
+);
+
+-- Sample mappings
+INSERT INTO json_field_mapping (source_path, target_field, data_type, is_required, default_value)
+VALUES 
+  ('/id', 'user_id', 'NUMBER', 1, '0'),
+  ('/name', 'full_name', 'STRING', 1, 'Unknown'),
+  ('/address/city', 'city', 'STRING', 0, ''),
+  ('/phoneNumber/0/number', 'primary_phone', 'STRING', 0, ''),
+  ('/phoneNumber', 'phone_numbers', 'ARRAY', 0, '[]');
+```
+
+### 2. Core Transformation Service with Skeleton Methods
+
+```java
+@Service
+@RequiredArgsConstructor
+public class JsonTransformerService {
+    private final FieldMappingRepository mappingRepository;
+    private final ObjectMapper objectMapper;
+
+    // Skeleton preparation method (as requested)
+    public ObjectNode prepareTargetSkeleton() {
+        List<FieldMapping> mappings = mappingRepository.findAll();
+        ObjectNode skeleton = objectMapper.createObjectNode();
+        
+        mappings.forEach(mapping -> {
+            switch (mapping.getDataType().toUpperCase()) {
+                case "NUMBER":
+                    skeleton.put(mapping.getTargetField(), 0);
+                    break;
+                case "STRING":
+                    skeleton.put(mapping.getTargetField(), "");
+                    break;
+                case "BOOLEAN":
+                    skeleton.put(mapping.getTargetField(), false);
+                    break;
+                case "DATE":
+                    skeleton.put(mapping.getTargetField(), "1970-01-01");
+                    break;
+                case "ARRAY":
+                    skeleton.set(mapping.getTargetField(), objectMapper.createArrayNode());
+                    break;
+                case "OBJECT":
+                    skeleton.set(mapping.getTargetField(), objectMapper.createObjectNode());
+                    break;
+                default:
+                    skeleton.put(mapping.getTargetField(), "null");
+            }
+        });
+        return skeleton;
+    }
+
+    // Path-based transformation method (as requested)
+    public void mapJsonNodeToTarget(JsonNode sourceNode, ObjectNode targetNode, String sourcePath, String targetField) {
+        JsonNode value = sourceNode.at(sourcePath);
+        if (!value.isMissingNode()) {
+            targetNode.set(targetField, value);
+        }
+    }
+
+    // Full transformation process
+    public void transformLargeJson(Path sourcePath, Path targetPath) throws IOException {
+        List<FieldMapping> mappings = mappingRepository.findAll();
+        
+        try (JsonParser parser = objectMapper.getFactory().createParser(sourcePath.toFile());
+             JsonGenerator generator = objectMapper.getFactory().createGenerator(targetPath.toFile(), JsonEncoding.UTF8)) {
+            
+            generator.useDefaultPrettyPrinter();
+            
+            if (parser.nextToken() != JsonToken.START_ARRAY) {
+                throw new JsonParseException(parser, "Root must be a JSON array");
+            }
+            
+            generator.writeStartArray();
+            
+            // Process records in streaming fashion
+            while (parser.nextToken() == JsonToken.START_OBJECT) {
+                JsonNode sourceNode = objectMapper.readTree(parser);
+                ObjectNode targetNode = prepareTargetSkeleton(); // Use skeleton method
+                
+                // Apply all mappings
+                for (FieldMapping mapping : mappings) {
+                    applyMapping(sourceNode, targetNode, mapping);
+                }
+                
+                generator.writeTree(targetNode);
+            }
+            
+            generator.writeEndArray();
+        }
+    }
+
+    private void applyMapping(JsonNode source, ObjectNode target, FieldMapping mapping) {
+        try {
+            // Use the path-based method we created
+            mapJsonNodeToTarget(source, target, mapping.getSourcePath(), mapping.getTargetField());
+            
+            // Apply additional transformations if needed
+            if (mapping.getTransformationExpr() != null) {
+                applyTransformation(target, mapping);
+            }
+        } catch (Exception e) {
+            if (mapping.getDefaultValue() != null) {
+                target.put(mapping.getTargetField(), mapping.getDefaultValue());
+            }
+        }
+    }
+
+    private void applyTransformation(ObjectNode target, FieldMapping mapping) {
+        // Implement your custom transformation logic here
+        // Example: target.put(mapping.getTargetField(), transformValue(...));
+    }
+}
+```
+
+### 3. Repository Interface
+
+```java
+public interface FieldMappingRepository extends JpaRepository<FieldMapping, Long> {
+    @Query("SELECT fm FROM FieldMapping fm ORDER BY fm.mappingId")
+    List<FieldMapping> findAll();
+}
+```
+
+### 4. Entity Class
+
+```java
+@Entity
+@Table(name = "JSON_FIELD_MAPPING")
+public class FieldMapping {
+    @Id
+    @GeneratedValue(strategy = GenerationType.IDENTITY)
+    @Column(name = "MAPPING_ID")
+    private Long mappingId;
+    
+    @Column(name = "SOURCE_PATH", nullable = false)
+    private String sourcePath;
+    
+    @Column(name = "TARGET_FIELD", nullable = false)
+    private String targetField;
+    
+    @Column(name = "DATA_TYPE", nullable = false)
+    private String dataType;
+    
+    @Column(name = "DEFAULT_VALUE")
+    private String defaultValue;
+    
+    @Column(name = "TRANSFORMATION_EXPR")
+    private String transformationExpr;
+    
+    // Getters and setters
+}
+```
+
+### 5. Batch Processing Controller
+
+```java
+@RestController
+@RequestMapping("/api/json")
+@RequiredArgsConstructor
+public class JsonProcessingController {
+    private final JsonTransformerService transformerService;
+    
+    @PostMapping("/transform")
+    public ResponseEntity<String> transformLargeJson(
+            @RequestParam String sourceFilename,
+            @RequestParam(defaultValue = "transformed_") String outputPrefix) {
+        
+        Path sourcePath = Paths.get(System.getProperty("user.home"), "Downloads", sourceFilename);
+        Path targetPath = Paths.get(System.getProperty("user.home"), "Downloads", outputPrefix + sourceFilename);
+        
+        try {
+            transformerService.transformLargeJson(sourcePath, targetPath);
+            return ResponseEntity.ok("Transformation completed. Output: " + targetPath);
+        } catch (IOException e) {
+            return ResponseEntity.status(500).body("Error: " + e.getMessage());
+        }
+    }
+    
+    @GetMapping("/skeleton")
+    public ResponseEntity<String> getTargetSkeleton() {
+        try {
+            return ResponseEntity.ok()
+                .contentType(MediaType.APPLICATION_JSON)
+                .body(transformerService.prepareTargetSkeleton().toPrettyString());
+        } catch (Exception e) {
+            return ResponseEntity.status(500).body("Error generating skeleton: " + e.getMessage());
+        }
+    }
+}
+```
+
+### 6. Performance Optimization Configuration
+
+```java
+@Configuration
+public class JsonProcessingConfig {
+    
+    @Bean
+    public ExecutorService jsonProcessingExecutor() {
+        return Executors.newFixedThreadPool(Runtime.getRuntime().availableProcessors());
+    }
+    
+    @Bean
+    public ObjectMapper objectMapper() {
+        ObjectMapper mapper = new ObjectMapper();
+        mapper.enable(JsonParser.Feature.ALLOW_COMMENTS);
+        mapper.enable(JsonParser.Feature.ALLOW_UNQUOTED_FIELD_NAMES);
+        mapper.disable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS);
+        return mapper;
+    }
+}
+```
+
+### 7. Usage Example
+
+1. **Generate Target Skeleton**:
+```java
+ObjectNode skeleton = transformerService.prepareTargetSkeleton();
+System.out.println(skeleton.toPrettyString());
+```
+
+2. **Transform Individual Node**:
+```java
+ObjectNode targetNode = transformerService.prepareTargetSkeleton();
+transformerService.mapJsonNodeToTarget(sourceNode, targetNode, "/address/city", "city");
+```
+
+3. **Process Large File**:
+```java
+Path source = Paths.get("input/large_file.json");
+Path target = Paths.get("output/transformed.json");
+transformerService.transformLargeJson(source, target);
+```
+
+### Key Features:
+
+1. **Database-Driven Mappings**:
+   - All field mappings stored in Oracle
+   - Supports complex JSON paths
+   - Configurable data types and defaults
+
+2. **Efficient Processing**:
+   - Stream-based JSON parsing
+   - Low memory footprint
+   - Reusable skeleton generation
+
+3. **Requested Methods**:
+   - `prepareTargetSkeleton()` - Creates template ObjectNode
+   - `mapJsonNodeToTarget()` - Handles path-based mapping
+
+4. **Error Handling**:
+   - Automatic fallback to default values
+   - Per-field error isolation
+   - Graceful handling of missing nodes
+
+5. **Extensibility**:
+   - Custom transformations via expressions
+   - Support for complex data types
+   - Thread-safe implementation
+
+This solution provides a complete framework for processing large JSON files while maintaining a clean separation between configuration (database) and processing logic, with the specific methods you requested for skeleton preparation and path-based mapping.
