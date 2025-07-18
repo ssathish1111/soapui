@@ -275,3 +275,35 @@ transformerService.transformLargeJson(source, target);
    - Thread-safe implementation
 
 This solution provides a complete framework for processing large JSON files while maintaining a clean separation between configuration (database) and processing logic, with the specific methods you requested for skeleton preparation and path-based mapping.
+public void processYourJson(String jsonInput) throws IOException {
+    JsonNode rootNode = objectMapper.readTree(jsonInput);
+    JsonNode footerNode = rootNode.path("Footer");
+    
+    // Get specific footer values
+    String billRun = findFooterValue(footerNode, "billRun");
+    String batchReference = findFooterValue(footerNode, "batchReference");
+    int numberOfRecords = findFooterValue(footerNode, "numberOfRecords", 0);
+    
+    // Log to database
+    logRepository.saveLogEntry("billRun", billRun);
+    logRepository.saveLogEntry("batchReference", batchReference);
+    logRepository.saveLogEntry("numberOfRecords", numberOfRecords);
+}
+
+private String findFooterValue(JsonNode footerNode, String fieldName) {
+    for (JsonNode item : footerNode) {
+        if (fieldName.equals(item.path("name").asText())) {
+            return item.path("value").asText();
+        }
+    }
+    return null;
+}
+
+private int findFooterValue(JsonNode footerNode, String fieldName, int defaultValue) {
+    for (JsonNode item : footerNode) {
+        if (fieldName.equals(item.path("name").asText())) {
+            return item.path("value").asInt(defaultValue);
+        }
+    }
+    return defaultValue;
+}
