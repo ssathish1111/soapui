@@ -307,3 +307,80 @@ private int findFooterValue(JsonNode footerNode, String fieldName, int defaultVa
     }
     return defaultValue;
 }
+
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ObjectNode;
+import org.apache.commons.lang3.StringUtils;
+
+import java.util.List;
+
+public class SimpleNotificationMapper {
+    
+    private final ObjectMapper objectMapper = new ObjectMapper();
+    private final List<SimpleMappingConfig> mappingConfigs;
+    
+    public SimpleNotificationMapper(List<SimpleMappingConfig> mappingConfigs) {
+        this.mappingConfigs = mappingConfigs;
+    }
+    
+    public String mapToJson(String[] delimitedValues) {
+        ObjectNode rootNode = objectMapper.createObjectNode();
+        ObjectNode emailResponseNode = rootNode.putObject("CrmAccountEmailResponseBO");
+        
+        // Variables to store prefType and prefValue for conditional logic
+        String prefType = null;
+        String prefValue = null;
+        
+        // First pass - process all direct mappings
+        for (SimpleMappingConfig config : mappingConfigs) {
+            if (config.getColumnPosition() <= delimitedValues.length) {
+                String value = delimitedValues[config.getColumnPosition() - 1];
+                
+                // Store prefType and prefValue for later use
+                if ("prefType".equals(config.getTargetField())) {
+                    prefType = value;
+                } else if ("prefValue".equals(config.getTargetField())) {
+                    prefValue = value;
+                }
+                
+                // Set the field value in appropriate node
+                setFieldValue(rootNode, emailResponseNode, config.getTargetField(), value);
+            }
+        }
+        
+        // Second pass - handle the conditional email/phone logic
+        if (prefType != null && prefValue != null) {
+            if (StringUtils.equalsIgnoreCase(prefType, "EMAIL")) {
+                emailResponseNode.put("preferEmail", true);
+                emailResponseNode.put("emailAddress", prefValue);
+            } else if (StringUtils.equalsIgnoreCase(prefType, "SMS")) {
+                emailResponseNode.put("preferSms", true);
+                emailResponseNode.put("phoneNumber", prefValue);
+            }
+        }
+        
+        return rootNode.toString();
+    }
+    
+    private void setFieldValue(ObjectNode rootNode, ObjectNode emailResponseNode, String fieldPath, String value) {
+        if (fieldPath.startsWith("CrmAccountEmailResponseBO.")) {
+            String fieldName = fieldPath.substring("CrmAccountEmailResponseBO.".length());
+            emailResponseNode.put(fieldName, value);
+        } else {
+            rootNode.put(fieldPath, value);
+        }
+    }
+}
+
+class SimpleMappingConfig {
+    private int columnPosition;
+    private String columnFormat;
+    private String datatype;
+    private String targetField;
+    private String columnAction;
+    
+    // Getters
+    public int getColumnPosition() { return columnPosition; }
+    public String getTargetField() { return targetField; }
+    // ... other getters
+}
