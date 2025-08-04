@@ -384,3 +384,165 @@ class SimpleMappingConfig {
     public String getTargetField() { return targetField; }
     // ... other getters
 }
+# Efficiently Writing 10,000 Database Records to CSV in Java
+
+To handle large datasets (like 10,000 records) efficiently while writing to CSV, you should use techniques that minimize memory usage. Here's a robust approach:
+
+## Solution Using JDBC and OpenCSV with Streaming
+
+```java
+import com.opencsv.CSVWriter;
+import java.io.FileWriter;
+import java.io.IOException;
+import java.sql.Connection;
+import java.sql.DriverManager;
+import java.sql.ResultSet;
+import java.sql.SQLException;
+import java.sql.Statement;
+
+public class DatabaseToCsvExporter {
+
+    public static void exportToCsv(String jdbcUrl, String username, String password, 
+                                  String query, String outputFilePath) {
+        Connection connection = null;
+        Statement statement = null;
+        ResultSet resultSet = null;
+        CSVWriter csvWriter = null;
+
+        try {
+            // 1. Establish database connection
+            connection = DriverManager.getConnection(jdbcUrl, username, password);
+            
+            // 2. Create statement with fetch size to control memory usage
+            statement = connection.createStatement(
+                ResultSet.TYPE_FORWARD_ONLY, 
+                ResultSet.CONCUR_READ_ONLY
+            );
+            statement.setFetchSize(1000); // Fetch records in batches
+            
+            // 3. Execute query
+            resultSet = statement.executeQuery(query);
+            
+            // 4. Initialize CSV writer
+            csvWriter = new CSVWriter(new FileWriter(outputFilePath));
+            
+            // 5. Write header
+            int columnCount = resultSet.getMetaData().getColumnCount();
+            String[] headers = new String[columnCount];
+            for (int i = 0; i < columnCount; i++) {
+                headers[i] = resultSet.getMetaData().getColumnName(i + 1);
+            }
+            csvWriter.writeNext(headers);
+            
+            // 6. Stream results and write to CSV
+            String[] row = new String[columnCount];
+            while (resultSet.next()) {
+                for (int i = 0; i < columnCount; i++) {
+                    row[i] = resultSet.getString(i + 1);
+                }
+                csvWriter.writeNext(row);
+            }
+            
+            System.out.println("Successfully exported data to " + outputFilePath);
+
+        } catch (SQLException | IOException e) {
+            e.printStackTrace();
+        } finally {
+            // 7. Close resources in reverse order
+            try {
+                if (csvWriter != null) csvWriter.close();
+                if (resultSet != null) resultSet.close();
+                if (statement != null) statement.close();
+                if (connection != null) connection.close();
+            } catch (SQLException | IOException e) {
+                e.printStackTrace();
+            }
+        }
+    }
+
+    public static void main(String[] args) {
+        String jdbcUrl = "jdbc:mysql://localhost:3306/your_database";
+        String username = "your_username";
+        String password = "your_password";
+        String query = "SELECT * FROM your_table";
+        String outputFilePath = "output.csv";
+        
+        exportToCsv(jdbcUrl, username, password, query, outputFilePath);
+    }
+}
+```
+
+## Key Memory Management Techniques:
+
+1. **Fetch Size Configuration**: `statement.setFetchSize(1000)` fetches records in batches rather than all at once.
+
+2. **Forward-Only ResultSet**: Using `TYPE_FORWARD_ONLY` ensures minimal memory overhead for the result set.
+
+3. **Stream Processing**: Records are processed one at a time and immediately written to CSV.
+
+4. **Proper Resource Cleanup**: All resources (Connection, Statement, ResultSet, CSVWriter) are properly closed in finally block.
+
+## Alternative Using Spring Batch (for very large datasets)
+
+If you're dealing with even larger datasets (millions of records), consider Spring Batch:
+
+```java
+@Configuration
+public class BatchConfig {
+
+    @Bean
+    public ItemReader<YourEntity> reader(DataSource dataSource) {
+        JdbcCursorItemReader<YourEntity> reader = new JdbcCursorItemReader<>();
+        reader.setDataSource(dataSource);
+        reader.setSql("SELECT * FROM your_table");
+        reader.setRowMapper(new BeanPropertyRowMapper<>(YourEntity.class));
+        reader.setFetchSize(1000);
+        return reader;
+    }
+
+    @Bean
+    public ItemWriter<YourEntity> writer() {
+        FlatFileItemWriter<YourEntity> writer = new FlatFileItemWriter<>();
+        writer.setResource(new FileSystemResource("output.csv"));
+        writer.setLineAggregator(new DelimitedLineAggregator<YourEntity>() {{
+            setDelimiter(",");
+            setFieldExtractor(new BeanWrapperFieldExtractor<YourEntity>() {{
+                setNames(new String[]{"field1", "field2", "field3"});
+            }});
+        }});
+        return writer;
+    }
+
+    @Bean
+    public Step step1(ItemReader<YourEntity> reader, ItemWriter<YourEntity> writer) {
+        return new StepBuilder("step1")
+            .<YourEntity, YourEntity>chunk(1000)
+            .reader(reader)
+            .writer(writer)
+            .build();
+    }
+
+    @Bean
+    public Job exportJob(Step step1) {
+        return new JobBuilder("exportJob")
+            .start(step1)
+            .build();
+    }
+}
+```
+
+## Dependencies
+
+For the first solution, you'll need:
+- JDBC driver for your database
+- OpenCSV (add to Maven):
+
+```xml
+<dependency>
+    <groupId>com.opencsv</groupId>
+    <artifactId>opencsv</artifactId>
+    <version>5.7.1</version>
+</dependency>
+```
+
+This approach ensures you handle 10,000 records efficiently with minimal memory impact.
