@@ -1,548 +1,245 @@
-Here's a comprehensive solution for processing large JSON files (10,000+ records) with database-driven mappings, including your requested skeleton preparation methods:
+If you prefer to use JPA with entity classes (the standard JPA approach), here's how to implement it properly:
 
-### 1. Enhanced Oracle Mapping Table
-
-```sql
-CREATE TABLE json_field_mapping (
-    mapping_id NUMBER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-    source_path VARCHAR2(500) NOT NULL,  -- JSON Pointer path
-    target_field VARCHAR2(100) NOT NULL,
-    data_type VARCHAR2(50) NOT NULL,     -- NUMBER, STRING, BOOLEAN, DATE, ARRAY, OBJECT
-    is_required NUMBER(1) DEFAULT 0,
-    default_value VARCHAR2(500),
-    validation_regex VARCHAR2(200),
-    transformation_expr VARCHAR2(500)    -- Optional transformation expression
-);
-
--- Sample mappings
-INSERT INTO json_field_mapping (source_path, target_field, data_type, is_required, default_value)
-VALUES 
-  ('/id', 'user_id', 'NUMBER', 1, '0'),
-  ('/name', 'full_name', 'STRING', 1, 'Unknown'),
-  ('/address/city', 'city', 'STRING', 0, ''),
-  ('/phoneNumber/0/number', 'primary_phone', 'STRING', 0, ''),
-  ('/phoneNumber', 'phone_numbers', 'ARRAY', 0, '[]');
-```
-
-### 2. Core Transformation Service with Skeleton Methods
+### 1. First, create the Entity class matching your table:
 
 ```java
-@Service
-@RequiredArgsConstructor
-public class JsonTransformerService {
-    private final FieldMappingRepository mappingRepository;
-    private final ObjectMapper objectMapper;
+import javax.persistence.*;
+import java.time.LocalDateTime;
 
-    // Skeleton preparation method (as requested)
-    public ObjectNode prepareTargetSkeleton() {
-        List<FieldMapping> mappings = mappingRepository.findAll();
-        ObjectNode skeleton = objectMapper.createObjectNode();
-        
-        mappings.forEach(mapping -> {
-            switch (mapping.getDataType().toUpperCase()) {
-                case "NUMBER":
-                    skeleton.put(mapping.getTargetField(), 0);
-                    break;
-                case "STRING":
-                    skeleton.put(mapping.getTargetField(), "");
-                    break;
-                case "BOOLEAN":
-                    skeleton.put(mapping.getTargetField(), false);
-                    break;
-                case "DATE":
-                    skeleton.put(mapping.getTargetField(), "1970-01-01");
-                    break;
-                case "ARRAY":
-                    skeleton.set(mapping.getTargetField(), objectMapper.createArrayNode());
-                    break;
-                case "OBJECT":
-                    skeleton.set(mapping.getTargetField(), objectMapper.createObjectNode());
-                    break;
-                default:
-                    skeleton.put(mapping.getTargetField(), "null");
-            }
-        });
-        return skeleton;
-    }
-
-    // Path-based transformation method (as requested)
-    public void mapJsonNodeToTarget(JsonNode sourceNode, ObjectNode targetNode, String sourcePath, String targetField) {
-        JsonNode value = sourceNode.at(sourcePath);
-        if (!value.isMissingNode()) {
-            targetNode.set(targetField, value);
-        }
-    }
-
-    // Full transformation process
-    public void transformLargeJson(Path sourcePath, Path targetPath) throws IOException {
-        List<FieldMapping> mappings = mappingRepository.findAll();
-        
-        try (JsonParser parser = objectMapper.getFactory().createParser(sourcePath.toFile());
-             JsonGenerator generator = objectMapper.getFactory().createGenerator(targetPath.toFile(), JsonEncoding.UTF8)) {
-            
-            generator.useDefaultPrettyPrinter();
-            
-            if (parser.nextToken() != JsonToken.START_ARRAY) {
-                throw new JsonParseException(parser, "Root must be a JSON array");
-            }
-            
-            generator.writeStartArray();
-            
-            // Process records in streaming fashion
-            while (parser.nextToken() == JsonToken.START_OBJECT) {
-                JsonNode sourceNode = objectMapper.readTree(parser);
-                ObjectNode targetNode = prepareTargetSkeleton(); // Use skeleton method
-                
-                // Apply all mappings
-                for (FieldMapping mapping : mappings) {
-                    applyMapping(sourceNode, targetNode, mapping);
-                }
-                
-                generator.writeTree(targetNode);
-            }
-            
-            generator.writeEndArray();
-        }
-    }
-
-    private void applyMapping(JsonNode source, ObjectNode target, FieldMapping mapping) {
-        try {
-            // Use the path-based method we created
-            mapJsonNodeToTarget(source, target, mapping.getSourcePath(), mapping.getTargetField());
-            
-            // Apply additional transformations if needed
-            if (mapping.getTransformationExpr() != null) {
-                applyTransformation(target, mapping);
-            }
-        } catch (Exception e) {
-            if (mapping.getDefaultValue() != null) {
-                target.put(mapping.getTargetField(), mapping.getDefaultValue());
-            }
-        }
-    }
-
-    private void applyTransformation(ObjectNode target, FieldMapping mapping) {
-        // Implement your custom transformation logic here
-        // Example: target.put(mapping.getTargetField(), transformValue(...));
-    }
-}
-```
-
-### 3. Repository Interface
-
-```java
-public interface FieldMappingRepository extends JpaRepository<FieldMapping, Long> {
-    @Query("SELECT fm FROM FieldMapping fm ORDER BY fm.mappingId")
-    List<FieldMapping> findAll();
-}
-```
-
-### 4. Entity Class
-
-```java
 @Entity
-@Table(name = "JSON_FIELD_MAPPING")
-public class FieldMapping {
+@Table(name = "CRM_ACT_EMAIL_REQUEST", schema = "ENS_RENSPET")
+public class CrmActEmailRequest {
+    
     @Id
-    @GeneratedValue(strategy = GenerationType.IDENTITY)
-    @Column(name = "MAPPING_ID")
-    private Long mappingId;
+    @Column(name = "ID")
+    private Long id;
     
-    @Column(name = "SOURCE_PATH", nullable = false)
-    private String sourcePath;
+    @Column(name = "NOTIFICATION_ID")
+    private Long notificationId;
     
-    @Column(name = "TARGET_FIELD", nullable = false)
-    private String targetField;
+    @Column(name = "ACCOUNT_ID", length = 32)
+    private String accountId;
     
-    @Column(name = "DATA_TYPE", nullable = false)
-    private String dataType;
+    @Column(name = "LANGUAGE_CODE", length = 2)
+    private String languageCode;
     
-    @Column(name = "DEFAULT_VALUE")
-    private String defaultValue;
+    @Column(name = "BATCH_FILE_NAME", length = 128)
+    private String batchFileName;
     
-    @Column(name = "TRANSFORMATION_EXPR")
-    private String transformationExpr;
+    @Column(name = "FILE_CORRELATION_ID")
+    private Long fileCorrelationId;
     
-    // Getters and setters
+    @Column(name = "CRM_ACT_EMAIL_REQ_FILENAME", length = 64)
+    private String crmActEmailReqFilename;
+    
+    @Column(name = "SENT_TO_CRM")
+    private Integer sentToCrm;
+    
+    @Column(name = "CREATED_ON")
+    private LocalDateTime createdOn;
+    
+    @Column(name = "MODIFIED_ON")
+    private LocalDateTime modifiedOn;
+    
+    @Column(name = "CREATED_BY", length = 32)
+    private String createdBy;
+    
+    @Column(name = "IS_BUSINESS_TEMPLATE", length = 1)
+    private String isBusinessTemplate;
+    
+    // Constructors
+    public CrmActEmailRequest() {}
+    
+    // Getters and Setters
+    public Long getId() { return id; }
+    public void setId(Long id) { this.id = id; }
+    
+    public Long getNotificationId() { return notificationId; }
+    public void setNotificationId(Long notificationId) { this.notificationId = notificationId; }
+    
+    // ... continue with all other getters/setters
 }
 ```
 
-### 5. Batch Processing Controller
+### 2. Create a JPA Repository interface:
 
 ```java
-@RestController
-@RequestMapping("/api/json")
-@RequiredArgsConstructor
-public class JsonProcessingController {
-    private final JsonTransformerService transformerService;
-    
-    @PostMapping("/transform")
-    public ResponseEntity<String> transformLargeJson(
-            @RequestParam String sourceFilename,
-            @RequestParam(defaultValue = "transformed_") String outputPrefix) {
-        
-        Path sourcePath = Paths.get(System.getProperty("user.home"), "Downloads", sourceFilename);
-        Path targetPath = Paths.get(System.getProperty("user.home"), "Downloads", outputPrefix + sourceFilename);
-        
-        try {
-            transformerService.transformLargeJson(sourcePath, targetPath);
-            return ResponseEntity.ok("Transformation completed. Output: " + targetPath);
-        } catch (IOException e) {
-            return ResponseEntity.status(500).body("Error: " + e.getMessage());
-        }
-    }
-    
-    @GetMapping("/skeleton")
-    public ResponseEntity<String> getTargetSkeleton() {
-        try {
-            return ResponseEntity.ok()
-                .contentType(MediaType.APPLICATION_JSON)
-                .body(transformerService.prepareTargetSkeleton().toPrettyString());
-        } catch (Exception e) {
-            return ResponseEntity.status(500).body("Error generating skeleton: " + e.getMessage());
-        }
-    }
-}
-```
-
-### 6. Performance Optimization Configuration
-
-```java
-@Configuration
-public class JsonProcessingConfig {
-    
-    @Bean
-    public ExecutorService jsonProcessingExecutor() {
-        return Executors.newFixedThreadPool(Runtime.getRuntime().availableProcessors());
-    }
-    
-    @Bean
-    public ObjectMapper objectMapper() {
-        ObjectMapper mapper = new ObjectMapper();
-        mapper.enable(JsonParser.Feature.ALLOW_COMMENTS);
-        mapper.enable(JsonParser.Feature.ALLOW_UNQUOTED_FIELD_NAMES);
-        mapper.disable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS);
-        return mapper;
-    }
-}
-```
-
-### 7. Usage Example
-
-1. **Generate Target Skeleton**:
-```java
-ObjectNode skeleton = transformerService.prepareTargetSkeleton();
-System.out.println(skeleton.toPrettyString());
-```
-
-2. **Transform Individual Node**:
-```java
-ObjectNode targetNode = transformerService.prepareTargetSkeleton();
-transformerService.mapJsonNodeToTarget(sourceNode, targetNode, "/address/city", "city");
-```
-
-3. **Process Large File**:
-```java
-Path source = Paths.get("input/large_file.json");
-Path target = Paths.get("output/transformed.json");
-transformerService.transformLargeJson(source, target);
-```
-
-### Key Features:
-
-1. **Database-Driven Mappings**:
-   - All field mappings stored in Oracle
-   - Supports complex JSON paths
-   - Configurable data types and defaults
-
-2. **Efficient Processing**:
-   - Stream-based JSON parsing
-   - Low memory footprint
-   - Reusable skeleton generation
-
-3. **Requested Methods**:
-   - `prepareTargetSkeleton()` - Creates template ObjectNode
-   - `mapJsonNodeToTarget()` - Handles path-based mapping
-
-4. **Error Handling**:
-   - Automatic fallback to default values
-   - Per-field error isolation
-   - Graceful handling of missing nodes
-
-5. **Extensibility**:
-   - Custom transformations via expressions
-   - Support for complex data types
-   - Thread-safe implementation
-
-This solution provides a complete framework for processing large JSON files while maintaining a clean separation between configuration (database) and processing logic, with the specific methods you requested for skeleton preparation and path-based mapping.
-public void processYourJson(String jsonInput) throws IOException {
-    JsonNode rootNode = objectMapper.readTree(jsonInput);
-    JsonNode footerNode = rootNode.path("Footer");
-    
-    // Get specific footer values
-    String billRun = findFooterValue(footerNode, "billRun");
-    String batchReference = findFooterValue(footerNode, "batchReference");
-    int numberOfRecords = findFooterValue(footerNode, "numberOfRecords", 0);
-    
-    // Log to database
-    logRepository.saveLogEntry("billRun", billRun);
-    logRepository.saveLogEntry("batchReference", batchReference);
-    logRepository.saveLogEntry("numberOfRecords", numberOfRecords);
-}
-
-private String findFooterValue(JsonNode footerNode, String fieldName) {
-    for (JsonNode item : footerNode) {
-        if (fieldName.equals(item.path("name").asText())) {
-            return item.path("value").asText();
-        }
-    }
-    return null;
-}
-
-private int findFooterValue(JsonNode footerNode, String fieldName, int defaultValue) {
-    for (JsonNode item : footerNode) {
-        if (fieldName.equals(item.path("name").asText())) {
-            return item.path("value").asInt(defaultValue);
-        }
-    }
-    return defaultValue;
-}
-
-import com.fasterxml.jackson.databind.ObjectMapper;
-import com.fasterxml.jackson.databind.node.ObjectNode;
-import org.apache.commons.lang3.StringUtils;
-
+import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Modifying;
+import org.springframework.data.jpa.repository.Query;
+import org.springframework.transaction.annotation.Transactional;
 import java.util.List;
 
-public class SimpleNotificationMapper {
+public interface CrmActEmailRequestRepository extends JpaRepository<CrmActEmailRequest, Long> {
     
-    private final ObjectMapper objectMapper = new ObjectMapper();
-    private final List<SimpleMappingConfig> mappingConfigs;
+    List<CrmActEmailRequest> findByBatchFileName(String batchFileName);
     
-    public SimpleNotificationMapper(List<SimpleMappingConfig> mappingConfigs) {
-        this.mappingConfigs = mappingConfigs;
-    }
+    @Transactional
+    @Modifying
+    @Query("UPDATE CrmActEmailRequest c SET c.sentToCrm = 1, c.modifiedOn = CURRENT_TIMESTAMP " +
+           "WHERE c.notificationId IN :notificationIds")
+    void markAsSent(@Param("notificationIds") List<Long> notificationIds);
     
-    public String mapToJson(String[] delimitedValues) {
-        ObjectNode rootNode = objectMapper.createObjectNode();
-        ObjectNode emailResponseNode = rootNode.putObject("CrmAccountEmailResponseBO");
-        
-        // Variables to store prefType and prefValue for conditional logic
-        String prefType = null;
-        String prefValue = null;
-        
-        // First pass - process all direct mappings
-        for (SimpleMappingConfig config : mappingConfigs) {
-            if (config.getColumnPosition() <= delimitedValues.length) {
-                String value = delimitedValues[config.getColumnPosition() - 1];
-                
-                // Store prefType and prefValue for later use
-                if ("prefType".equals(config.getTargetField())) {
-                    prefType = value;
-                } else if ("prefValue".equals(config.getTargetField())) {
-                    prefValue = value;
-                }
-                
-                // Set the field value in appropriate node
-                setFieldValue(rootNode, emailResponseNode, config.getTargetField(), value);
-            }
-        }
-        
-        // Second pass - handle the conditional email/phone logic
-        if (prefType != null && prefValue != null) {
-            if (StringUtils.equalsIgnoreCase(prefType, "EMAIL")) {
-                emailResponseNode.put("preferEmail", true);
-                emailResponseNode.put("emailAddress", prefValue);
-            } else if (StringUtils.equalsIgnoreCase(prefType, "SMS")) {
-                emailResponseNode.put("preferSms", true);
-                emailResponseNode.put("phoneNumber", prefValue);
-            }
-        }
-        
-        return rootNode.toString();
-    }
-    
-    private void setFieldValue(ObjectNode rootNode, ObjectNode emailResponseNode, String fieldPath, String value) {
-        if (fieldPath.startsWith("CrmAccountEmailResponseBO.")) {
-            String fieldName = fieldPath.substring("CrmAccountEmailResponseBO.".length());
-            emailResponseNode.put(fieldName, value);
-        } else {
-            rootNode.put(fieldPath, value);
-        }
+    @Transactional
+    default void saveAllInBatch(List<CrmActEmailRequest> entities) {
+        saveAll(entities);
     }
 }
+```
 
-class SimpleMappingConfig {
-    private int columnPosition;
-    private String columnFormat;
-    private String datatype;
-    private String targetField;
-    private String columnAction;
-    
-    // Getters
-    public int getColumnPosition() { return columnPosition; }
-    public String getTargetField() { return targetField; }
-    // ... other getters
-}
-# Efficiently Writing 10,000 Database Records to CSV in Java
-
-To handle large datasets (like 10,000 records) efficiently while writing to CSV, you should use techniques that minimize memory usage. Here's a robust approach:
-
-## Solution Using JDBC and OpenCSV with Streaming
+### 3. Create a Service class:
 
 ```java
-import com.opencsv.CSVWriter;
-import java.io.FileWriter;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+import java.util.List;
+import java.util.stream.Collectors;
+
+@Service
+public class CrmActEmailService {
+    
+    private final CrmActEmailRequestRepository repository;
+    
+    public CrmActEmailService(CrmActEmailRequestRepository repository) {
+        this.repository = repository;
+    }
+    
+    @Transactional
+    public void processBatch(List<CrmActEmailRequest> requests) {
+        repository.saveAllInBatch(requests);
+    }
+    
+    public List<CrmActEmailRequest> getByBatchFileName(String batchFileName) {
+        return repository.findByBatchFileName(batchFileName);
+    }
+    
+    @Transactional
+    public void markNotificationsAsSent(List<Long> notificationIds) {
+        repository.markAsSent(notificationIds);
+    }
+    
+    public CrmActEmailRequest createFromMap(Map<String, Object> data) {
+        CrmActEmailRequest entity = new CrmActEmailRequest();
+        entity.setId((Long) data.get("ID"));
+        entity.setNotificationId((Long) data.get("NOTIFICATION_ID"));
+        entity.setAccountId((String) data.get("ACCOUNT_ID"));
+        entity.setLanguageCode((String) data.get("LANGUAGE_CODE"));
+        entity.setBatchFileName((String) data.get("BATCH_FILE_NAME"));
+        entity.setFileCorrelationId((Long) data.get("FILE_CORRELATION_ID"));
+        entity.setCrmActEmailReqFilename((String) data.get("CRM_ACT_EMAIL_REQ_FILENAME"));
+        entity.setSentToCrm((Integer) data.get("SENT_TO_CRM"));
+        entity.setIsBusinessTemplate((String) data.get("IS_BUSINESS_TEMPLATE"));
+        return entity;
+    }
+}
+```
+
+### 4. Update your Processor to use the Entity:
+
+```java
+import com.fasterxml.jackson.databind.JsonNode;
+import org.springframework.stereotype.Component;
 import java.io.IOException;
-import java.sql.Connection;
-import java.sql.DriverManager;
-import java.sql.ResultSet;
-import java.sql.SQLException;
-import java.sql.Statement;
+import java.util.*;
 
-public class DatabaseToCsvExporter {
+@Component
+public class NotificationProcessor {
+    private final CrmActEmailService emailService;
+    private final int batchSize;
+    
+    public NotificationProcessor(CrmActEmailService emailService, int batchSize) {
+        this.emailService = emailService;
+        this.batchSize = batchSize;
+    }
 
-    public static void exportToCsv(String jdbcUrl, String username, String password, 
-                                  String query, String outputFilePath) {
-        Connection connection = null;
-        Statement statement = null;
-        ResultSet resultSet = null;
-        CSVWriter csvWriter = null;
+    public void processNotifications(BatchContextJSON context) throws IOException {
+        // ... (same JSON parsing code as before until mapNotificationNode)
+        
+        List<CrmActEmailRequest> notifications = new ArrayList<>();
+        
+        while (parser.nextToken() != JsonToken.END_ARRAY) {
+            if (parser.currentToken() == JsonToken.START_OBJECT) {
+                JsonNode node = objectMapper.readTree(parser);
+                Map<String, Object> notificationMap = mapNotificationToMap(context, node);
+                CrmActEmailRequest entity = emailService.createFromMap(notificationMap);
+                notifications.add(entity);
 
-        try {
-            // 1. Establish database connection
-            connection = DriverManager.getConnection(jdbcUrl, username, password);
-            
-            // 2. Create statement with fetch size to control memory usage
-            statement = connection.createStatement(
-                ResultSet.TYPE_FORWARD_ONLY, 
-                ResultSet.CONCUR_READ_ONLY
-            );
-            statement.setFetchSize(1000); // Fetch records in batches
-            
-            // 3. Execute query
-            resultSet = statement.executeQuery(query);
-            
-            // 4. Initialize CSV writer
-            csvWriter = new CSVWriter(new FileWriter(outputFilePath));
-            
-            // 5. Write header
-            int columnCount = resultSet.getMetaData().getColumnCount();
-            String[] headers = new String[columnCount];
-            for (int i = 0; i < columnCount; i++) {
-                headers[i] = resultSet.getMetaData().getColumnName(i + 1);
-            }
-            csvWriter.writeNext(headers);
-            
-            // 6. Stream results and write to CSV
-            String[] row = new String[columnCount];
-            while (resultSet.next()) {
-                for (int i = 0; i < columnCount; i++) {
-                    row[i] = resultSet.getString(i + 1);
+                if (notifications.size() >= batchSize) {
+                    emailService.processBatch(notifications);
+                    notifications.clear();
                 }
-                csvWriter.writeNext(row);
             }
-            
-            System.out.println("Successfully exported data to " + outputFilePath);
+        }
 
-        } catch (SQLException | IOException e) {
-            e.printStackTrace();
-        } finally {
-            // 7. Close resources in reverse order
-            try {
-                if (csvWriter != null) csvWriter.close();
-                if (resultSet != null) resultSet.close();
-                if (statement != null) statement.close();
-                if (connection != null) connection.close();
-            } catch (SQLException | IOException e) {
-                e.printStackTrace();
-            }
+        if (!notifications.isEmpty()) {
+            emailService.processBatch(notifications);
         }
     }
 
-    public static void main(String[] args) {
-        String jdbcUrl = "jdbc:mysql://localhost:3306/your_database";
-        String username = "your_username";
-        String password = "your_password";
-        String query = "SELECT * FROM your_table";
-        String outputFilePath = "output.csv";
+    private Map<String, Object> mapNotificationToMap(BatchContextJSON context, JsonNode node) {
+        Map<String, Object> notification = new HashMap<>();
         
-        exportToCsv(jdbcUrl, username, password, query, outputFilePath);
+        // Required fields
+        notification.put("ID", generateId());
+        notification.put("NOTIFICATION_ID", getNodeLong(node, "notificationId"));
+        notification.put("ACCOUNT_ID", getNodeText(node, "accountId"));
+        notification.put("LANGUAGE_CODE", getNodeText(node, "languageCode"));
+        notification.put("BATCH_FILE_NAME", context.getBatchFileName());
+        notification.put("FILE_CORRELATION_ID", context.getFileCorrelationId());
+        
+        // Optional fields with defaults
+        notification.put("CRM_ACT_EMAIL_REQ_FILENAME", 
+            getNodeText(node, "filename", "default_filename"));
+        notification.put("SENT_TO_CRM", 0);
+        notification.put("IS_BUSINESS_TEMPLATE", 
+            getNodeText(node, "isBusinessTemplate", "N"));
+        
+        return notification;
     }
+    
+    // ... helper methods remain the same
 }
 ```
 
-## Key Memory Management Techniques:
+### 5. Configuration (application.properties):
 
-1. **Fetch Size Configuration**: `statement.setFetchSize(1000)` fetches records in batches rather than all at once.
+```properties
+# JPA/Hibernate
+spring.jpa.hibernate.ddl-auto=validate
+spring.jpa.show-sql=true
+spring.jpa.properties.hibernate.format_sql=true
 
-2. **Forward-Only ResultSet**: Using `TYPE_FORWARD_ONLY` ensures minimal memory overhead for the result set.
+# Datasource
+spring.datasource.url=jdbc:oracle:thin:@//host:port/service
+spring.datasource.username=username
+spring.datasource.password=password
+spring.datasource.driver-class-name=oracle.jdbc.OracleDriver
 
-3. **Stream Processing**: Records are processed one at a time and immediately written to CSV.
+# JPA
+spring.jpa.database-platform=org.hibernate.dialect.Oracle12cDialect
+```
 
-4. **Proper Resource Cleanup**: All resources (Connection, Statement, ResultSet, CSVWriter) are properly closed in finally block.
+### Key Benefits of This Approach:
 
-## Alternative Using Spring Batch (for very large datasets)
+1. **Type Safety**: Compile-time checking of entity fields
+2. **JPA Features**: Automatic dirty checking, caching, lazy loading
+3. **Repository Pattern**: Clean separation of data access logic
+4. **Transaction Management**: Built-in with Spring
+5. **Batch Processing**: Efficient database operations
+6. **Schema Validation**: Hibernate validates against actual database schema
 
-If you're dealing with even larger datasets (millions of records), consider Spring Batch:
+### Usage Example:
 
 ```java
-@Configuration
-public class BatchConfig {
+// Get all notifications for a batch
+List<CrmActEmailRequest> notifications = emailService.getByBatchFileName("batch_001");
 
-    @Bean
-    public ItemReader<YourEntity> reader(DataSource dataSource) {
-        JdbcCursorItemReader<YourEntity> reader = new JdbcCursorItemReader<>();
-        reader.setDataSource(dataSource);
-        reader.setSql("SELECT * FROM your_table");
-        reader.setRowMapper(new BeanPropertyRowMapper<>(YourEntity.class));
-        reader.setFetchSize(1000);
-        return reader;
-    }
-
-    @Bean
-    public ItemWriter<YourEntity> writer() {
-        FlatFileItemWriter<YourEntity> writer = new FlatFileItemWriter<>();
-        writer.setResource(new FileSystemResource("output.csv"));
-        writer.setLineAggregator(new DelimitedLineAggregator<YourEntity>() {{
-            setDelimiter(",");
-            setFieldExtractor(new BeanWrapperFieldExtractor<YourEntity>() {{
-                setNames(new String[]{"field1", "field2", "field3"});
-            }});
-        }});
-        return writer;
-    }
-
-    @Bean
-    public Step step1(ItemReader<YourEntity> reader, ItemWriter<YourEntity> writer) {
-        return new StepBuilder("step1")
-            .<YourEntity, YourEntity>chunk(1000)
-            .reader(reader)
-            .writer(writer)
-            .build();
-    }
-
-    @Bean
-    public Job exportJob(Step step1) {
-        return new JobBuilder("exportJob")
-            .start(step1)
-            .build();
-    }
-}
+// Process and mark as sent
+emailService.markNotificationsAsSent(
+    notifications.stream()
+        .map(CrmActEmailRequest::getNotificationId)
+        .collect(Collectors.toList())
+);
 ```
 
-## Dependencies
-
-For the first solution, you'll need:
-- JDBC driver for your database
-- OpenCSV (add to Maven):
-
-```xml
-<dependency>
-    <groupId>com.opencsv</groupId>
-    <artifactId>opencsv</artifactId>
-    <version>5.7.1</version>
-</dependency>
-```
-
-This approach ensures you handle 10,000 records efficiently with minimal memory impact.
+This is the standard JPA approach that provides the best combination of type safety, maintainability, and performance. The entity class serves as the single source of truth for your database schema.
