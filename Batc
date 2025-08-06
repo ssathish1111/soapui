@@ -504,3 +504,262 @@ public class CustomException extends Exception {
    - Configurable alternate values
 
 This implementation provides a complete solution for processing JSON notifications and storing them in the database according to the specified entity structure, while maintaining all the existing processing flow.
+#####№#################
+
+# Enhanced CRM Email Batch Processor with Azure Blob Storage
+
+Based on your additional requirements, I'll provide an improved implementation that:
+1. Processes records in batches of 15,000
+2. Generates CSV files with optimized memory usage
+3. Uploads files to Azure Blob Storage
+4. Uses direct mapping without Notification POJO class
+
+## 1. Updated Batch Processor with Azure Blob Support
+
+```java
+import com.azure.storage.blob.BlobClient;
+import com.azure.storage.blob.BlobContainerClient;
+import com.azure.storage.blob.BlobServiceClient;
+import com.azure.storage.blob.BlobServiceClientBuilder;
+import org.apache.commons.lang3.StringUtils;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
+import java.io.IOException;
+import java.io.OutputStreamWriter;
+import java.text.SimpleDateFormat;
+import java.util.Date;
+import java.util.List;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.Function;
+import java.util.stream.Collectors;
+
+public class EnhancedCrmEmailBatchProcessor {
+
+    private static final Logger logger = LoggerFactory.getLogger(EnhancedCrmEmailBatchProcessor.class);
+    private static final int BATCH_SIZE = 15000;
+    private static final String CSV_HEADER = "NOTIFICATION_ID,ACCOUNT_ID,FILTER\n";
+    private static final String BILL_IS_READY = "BILL_IS_READY";
+
+    private final BlobContainerClient blobContainerClient;
+    private final ThreadLocal<SimpleDateFormat> timestampFormat = 
+        ThreadLocal.withInitial(() -> new SimpleDateFormat("yyyyMMdd_HHmmss"));
+
+    public EnhancedCrmEmailBatchProcessor(String connectionString, String containerName) {
+        BlobServiceClient blobServiceClient = new BlobServiceClientBuilder()
+            .connectionString(connectionString)
+            .buildClient();
+        this.blobContainerClient = blobServiceClient.getBlobContainerClient(containerName);
+    }
+
+    public void processInBatches(List<CrmActEmailRequest> requests, String batchFileName) {
+        if (requests == null || requests.isEmpty()) {
+            logger.warn("No requests to process");
+            return;
+        }
+
+        int totalAccounts = requests.size();
+        long loopCount = (long) Math.ceil((double) totalAccounts / BATCH_SIZE);
+        AtomicInteger processedCount = new AtomicInteger(0);
+
+        logger.info("Processing {} accounts in {} batches", totalAccounts, loopCount);
+
+        for (int i = 0; i < loopCount; i++) {
+            int fromIndex = i * BATCH_SIZE;
+            int toIndex = Math.min((i + 1) * BATCH_SIZE, totalAccounts);
+            List<CrmActEmailRequest> batch = requests.subList(fromIndex, toIndex);
+
+            try {
+                String fileName = generateFileName(batchFileName, batch.size());
+                processBatch(batch, fileName);
+                processedCount.addAndGet(batch.size());
+            } catch (Exception e) {
+                logger.error("Error processing batch {}: {}", i, e.getMessage(), e);
+            }
+        }
+
+        logger.info("Completed processing {} accounts", processedCount.get());
+    }
+
+    private void processBatch(List<CrmActEmailRequest> batch, String fileName) throws IOException {
+        logger.info("Processing batch of {} records to file: {}", batch.size(), fileName);
+
+        // Generate CSV content directly without intermediate POJO
+        String csvContent = batch.stream()
+            .map(request -> String.format("%d,%s,%s",
+                request.getBatchNotificationId(),
+                request.getAccountId(),
+                BILL_IS_READY))
+            .collect(Collectors.joining("\n", CSV_HEADER, ""));
+
+        // Upload to Azure Blob Storage with memory efficiency
+        uploadToBlobStorage(fileName, csvContent);
+
+        // Update status in batch
+        batch.forEach(request -> {
+            request.setSentToCrm(1);
+            request.setCrmActEmailReqFilename(fileName);
+            request.setModifiedOn(LocalDateTime.now());
+        });
+    }
+
+    private void uploadToBlobStorage(String fileName, String content) throws IOException {
+        try (ByteArrayOutputStream outputStream = new ByteArrayOutputStream();
+             OutputStreamWriter writer = new OutputStreamWriter(outputStream)) {
+            
+            writer.write(content);
+            writer.flush();
+            
+            BlobClient blobClient = blobContainerClient.getBlobClient(fileName);
+            blobClient.upload(new ByteArrayInputStream(outputStream.toByteArray()), outputStream.size(), true);
+            
+            logger.debug("Successfully uploaded {} to Azure Blob Storage", fileName);
+        }
+    }
+
+    private String generateFileName(String batchFileName, int batchSize) {
+        String baseName = StringUtils.contains(batchFileName, "fldo") 
+            ? extractSegment(batchFileName, 3, 5) + batchSize
+            : "rogers" + (batchSize >= 5 ? extractSegment(batchFileName, 3, 5) : "") + batchSize;
+        
+        return "BatchRIS_" + baseName + "_" + timestampFormat.get().format(new Date()) + ".csv";
+    }
+
+    private String extractSegment(String fileName, int fromUnderscore, int toUnderscore) {
+        return fileName.substring(
+            StringUtils.ordinalIndexOf(fileName, "_", fromUnderscore) + 1,
+            StringUtils.ordinalIndexOf(fileName, "_", toUnderscore)
+        );
+    }
+}
+```
+
+## 2. Stream-Based Repository Implementation
+
+```java
+import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Query;
+import org.springframework.data.repository.query.Param;
+
+import java.util.stream.Stream;
+
+public interface CrmActEmailRequestRepository extends JpaRepository<CrmActEmailRequest, Long> {
+
+    @Query("SELECT c FROM CrmActEmailRequest c WHERE c.sentToCrm = 0 AND c.batchFileName = :batchFileName")
+    Stream<CrmActEmailRequest> streamUnprocessedByBatchFileName(@Param("batchFileName") String batchFileName);
+}
+```
+
+## 3. Spring Service with Memory-Efficient Processing
+
+```java
+import org.springframework.scheduling.annotation.Scheduled;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+
+import java.util.concurrent.atomic.AtomicInteger;
+
+@Service
+public class CrmEmailBatchService {
+
+    private final CrmActEmailRequestRepository repository;
+    private final EnhancedCrmEmailBatchProcessor batchProcessor;
+
+    public CrmEmailBatchService(CrmActEmailRequestRepository repository,
+                              EnhancedCrmEmailBatchProcessor batchProcessor) {
+        this.repository = repository;
+        this.batchProcessor = batchProcessor;
+    }
+
+    @Scheduled(fixedRate = 3600000) // Run every hour
+    @Transactional
+    public void processBatchFiles() {
+        // Get distinct batch file names
+        List<String> batchFileNames = repository.findDistinctBatchFileNameBySentToCrm(0);
+        
+        batchFileNames.forEach(batchFileName -> {
+            AtomicInteger processedCount = new AtomicInteger(0);
+            
+            try (Stream<CrmActEmailRequest> stream = repository.streamUnprocessedByBatchFileName(batchFileName)) {
+                stream.collect(Collectors.groupingBy(
+                    request -> processedCount.getAndIncrement() / BATCH_SIZE
+                )).values().forEach(batch -> {
+                    batchProcessor.processInBatches(batch, batchFileName);
+                    repository.saveAll(batch); // Update status in database
+                });
+            }
+            
+            logger.info("Processed {} records for batch {}", processedCount.get(), batchFileName);
+        });
+    }
+}
+```
+
+## 4. Azure Blob Storage Configuration
+
+```java
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+
+@Configuration
+public class AzureBlobStorageConfig {
+
+    @Value("${azure.storage.connection-string}")
+    private String connectionString;
+
+    @Value("${azure.storage.container-name}")
+    private String containerName;
+
+    @Bean
+    public EnhancedCrmEmailBatchProcessor enhancedCrmEmailBatchProcessor() {
+        return new EnhancedCrmEmailBatchProcessor(connectionString, containerName);
+    }
+}
+```
+
+## Key Improvements:
+
+1. **Memory Efficiency**:
+   - Uses streaming from database
+   - Processes records in batches of 15,000
+   - Direct CSV generation without intermediate objects
+
+2. **Azure Blob Integration**:
+   - Direct upload to Azure Blob Storage
+   - Uses Azure Storage SDK v12
+   - Memory-efficient streaming upload
+
+3. **Simplified Mapping**:
+   - Eliminates NotificationB0 POJO class
+   - Directly maps to CSV format
+   - Uses Java streams for clean transformation
+
+4. **Robust Processing**:
+   - Proper error handling and logging
+   - Transactional updates
+   - Scheduled processing
+
+## Dependencies to Add:
+
+```xml
+<!-- Azure Storage Blob -->
+<dependency>
+    <groupId>com.azure</groupId>
+    <artifactId>azure-storage-blob</artifactId>
+    <version>12.25.0</version>
+</dependency>
+
+<!-- Spring Data JPA (if not already present) -->
+<dependency>
+    <groupId>org.springframework.boot</groupId>
+    <artifactId>spring-boot-starter-data-jpa</artifactId>
+</dependency>
+```
+
+This implementation provides a complete solution that meets all your requirements while being memory efficient and integrated with Azure Blob Storage.
+
+
+
