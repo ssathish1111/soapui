@@ -1038,3 +1038,9 @@ public class JsonTransformerService {
         }
     }
 }
+
+{
+  "java.jdt.ls.vmargs": "-javaagent:${extensionPath:vscode-lombok}/lombok.jar",
+  "java.import.gradle.annotationProcessingEnabled": true,
+  "java.import.maven.annotationProcessingEnabled": true
+}
