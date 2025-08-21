@@ -1,8 +1,64 @@
-I can see this file contains a mix of Java code and SQL statements, along with some notes about implementing circuit breaker logic. The Java code appears to be a service class for making external API calls, but there are several syntax errors and inconsistencies. Let me help you organize and correct this implementation.
+Complete External Service Executor with Circuit Breaker
 
-Corrected Java Code with Circuit Breaker Implementation
+I'll provide a complete implementation of the service with proper circuit breaker functionality, organized into appropriate files.
+
+1. Configuration Classes
+
+CircuitBreakerConfig.java
 
 ```java
+import io.github.resilience4j.circuitbreaker.CircuitBreakerConfig;
+import io.github.resilience4j.circuitbreaker.CircuitBreakerRegistry;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+
+import java.time.Duration;
+
+@Configuration
+public class CircuitBreakerConfig {
+    
+    @Bean
+    public CircuitBreakerRegistry circuitBreakerRegistry() {
+        CircuitBreakerConfig config = CircuitBreakerConfig.custom()
+            .failureRateThreshold(50)
+            .waitDurationInOpenState(Duration.ofSeconds(60))
+            .slidingWindowSize(10)
+            .permittedNumberOfCallsInHalfOpenState(5)
+            .build();
+            
+        return CircuitBreakerRegistry.of(config);
+    }
+}
+```
+
+WebClientConfig.java
+
+```java
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+import org.springframework.web.reactive.function.client.WebClient;
+
+@Configuration
+public class WebClientConfig {
+    
+    @Bean
+    public WebClient.Builder webClientBuilder() {
+        return WebClient.builder();
+    }
+}
+```
+
+2. Service Classes
+
+ExternalServiceExecutor.java
+
+```java
+import io.github.resilience4j.circuitbreaker.CircuitBreaker;
+import io.github.resilience4j.circuitbreaker.CircuitBreakerRegistry;
+import org.springframework.stereotype.Component;
+
+import java.util.Map;
+
 @Component
 public class ExternalServiceExecutor {
     private final ApiCallingService apiCallingService;
@@ -64,9 +120,28 @@ public class ExternalServiceExecutor {
                                     client.getUserInfo().getProperties(), jsonPdfData, null, PDF_NAME));
     }
 }
+```
+
+ApiCallingService.java
+
+```java
+import io.github.resilience4j.circuitbreaker.CircuitBreaker;
+import io.github.resilience4j.circuitbreaker.CircuitBreakerRegistry;
+import org.springframework.http.HttpMethod;
+import org.springframework.stereotype.Service;
+
+import java.util.Map;
 
 @Service
 public class ApiCallingService {
+    private final CircuitBreakerRegistry circuitBreakerRegistry;
+    private final ServiceStateRepository serviceStateRepository;
+
+    public ApiCallingService(CircuitBreakerRegistry circuitBreakerRegistry, 
+                           ServiceStateRepository serviceStateRepository) {
+        this.circuitBreakerRegistry = circuitBreakerRegistry;
+        this.serviceStateRepository = serviceStateRepository;
+    }
     
     public <T, U> T request(WebClientService webClientService, 
                            Class<T> successResponseType, 
@@ -80,83 +155,325 @@ public class ApiCallingService {
                            Map<String, String> queryParameterMap, 
                            String serviceName) {
         
-        var response = webClientService.request(successResponseType, errorResponseType, httpMethod, 
-                                              apiEndpoint, pathSegment, pathParameterMap, 
-                                              headerMap, requestBody, queryParameterMap);
+        // Check service state before making the request
+        ServiceState serviceState = serviceStateRepository.findByServiceName(serviceName);
+        if (serviceState != null && "OPEN".equals(serviceState.getStatus())) {
+            throw new ServiceUnavailableException("Service " + serviceName + " is currently unavailable");
+        }
         
-        if (response.isSuccess()) {
-            return response.getSuccessResponse();
-        } else {
-            // Update circuit breaker state based on error response
-            updateServiceState(serviceName, response.getStatusCode());
-            throw new ApiCallingException(response.getErrorMessage(), serviceName, response.getStatusCode());
+        try {
+            var response = webClientService.request(successResponseType, errorResponseType, httpMethod, 
+                                                  apiEndpoint, pathSegment, pathParameterMap, 
+                                                  headerMap, requestBody, queryParameterMap);
+            
+            if (response.isSuccess()) {
+                // Reset error count on successful response
+                serviceStateRepository.updateServiceState(serviceName, "CLOSED", 0);
+                return response.getSuccessResponse();
+            } else {
+                // Update error count and potentially open circuit
+                handleErrorResponse(serviceName, response.getStatusCode());
+                throw new ApiCallingException(response.getErrorMessage(), serviceName, response.getStatusCode());
+            }
+        } catch (Exception e) {
+            // Update error count and potentially open circuit
+            handleErrorResponse(serviceName, 500);
+            throw new ApiCallingException("Service call failed: " + e.getMessage(), serviceName, 500);
         }
     }
     
-    private void updateServiceState(String serviceName, int statusCode) {
-        // Implement logic to update service state in EMSC_CONFIG_PARAMETERS
-        // This could be based on HTTP status codes (e.g., 5xx errors indicate service issues)
-        boolean isError = statusCode >= 500;
-        // Update database with service status
-    }
-}
-
-// Circuit breaker configuration (typically in a configuration class)
-@Configuration
-public class CircuitBreakerConfig {
-    
-    @Bean
-    public CircuitBreakerRegistry circuitBreakerRegistry() {
-        return CircuitBreakerRegistry.ofDefaults();
-    }
-    
-    @Bean
-    public CircuitBreakerConfigProperties circuitBreakerConfigProperties() {
-        return CircuitBreakerConfigProperties.custom()
-            .failureRateThreshold(50)
-            .waitDurationInOpenState(Duration.ofMillis(1000))
-            .slidingWindowSize(10)
-            .build();
+    private void handleErrorResponse(String serviceName, int statusCode) {
+        ServiceState serviceState = serviceStateRepository.findByServiceName(serviceName);
+        if (serviceState == null) {
+            serviceState = new ServiceState(serviceName, "CLOSED", 1);
+            serviceStateRepository.save(serviceState);
+        } else {
+            int newErrorCount = serviceState.getErrorCount() + 1;
+            
+            // Open circuit if error threshold is exceeded
+            if (newErrorCount >= 5) {
+                serviceStateRepository.updateServiceState(serviceName, "OPEN", newErrorCount);
+                
+                // Also update the circuit breaker
+                CircuitBreaker circuitBreaker = circuitBreakerRegistry.circuitBreaker(serviceName);
+                if (circuitBreaker != null) {
+                    circuitBreaker.transitionToOpenState();
+                }
+            } else {
+                serviceStateRepository.updateServiceState(serviceName, "CLOSED", newErrorCount);
+            }
+        }
     }
 }
 ```
 
-Database Table Structure (Corrected)
+WebClientService.java
+
+```java
+import org.springframework.http.HttpMethod;
+import org.springframework.web.reactive.function.client.WebClient;
+import reactor.core.publisher.Mono;
+
+import java.util.Map;
+
+@Component
+public class WebClientService {
+    private final WebClient webClient;
+    private final UserInfo userInfo;
+
+    public WebClientService(WebClient.Builder webClientBuilder, UserInfo userInfo) {
+        this.webClient = webClientBuilder.build();
+        this.userInfo = userInfo;
+    }
+
+    public <T, U> ServiceResponse<T> request(Class<T> successResponseType, 
+                                           Class<U> errorResponseType, 
+                                           HttpMethod httpMethod, 
+                                           String apiEndpoint, 
+                                           String pathSegment, 
+                                           Map<String, String> pathParameterMap, 
+                                           Map<String, String> headerMap, 
+                                           Object requestBody, 
+                                           Map<String, String> queryParameterMap) {
+        
+        try {
+            WebClient.RequestBodySpec requestSpec = webClient.method(httpMethod)
+                .uri(apiEndpoint, uriBuilder -> {
+                    if (pathSegment != null) {
+                        uriBuilder.pathSegment(pathSegment);
+                    }
+                    if (pathParameterMap != null) {
+                        pathParameterMap.forEach(uriBuilder::build);
+                    }
+                    if (queryParameterMap != null) {
+                        queryParameterMap.forEach(uriBuilder::queryParam);
+                    }
+                    return uriBuilder.build();
+                });
+            
+            if (headerMap != null) {
+                requestSpec.headers(headers -> headerMap.forEach(headers::add));
+            }
+            
+            if (requestBody != null) {
+                requestSpec.bodyValue(requestBody);
+            }
+            
+            T response = requestSpec.retrieve()
+                .onStatus(status -> status.isError(), clientResponse -> 
+                    clientResponse.bodyToMono(errorResponseType)
+                        .flatMap(errorBody -> Mono.error(new ApiCallingException(
+                            "Error response from service", 
+                            apiEndpoint, 
+                            clientResponse.statusCode().value())))
+                )
+                .bodyToMono(successResponseType)
+                .block();
+            
+            return new ServiceResponse<>(response, true, null, 200);
+        } catch (Exception e) {
+            return new ServiceResponse<>(null, false, e.getMessage(), 500);
+        }
+    }
+    
+    public UserInfo getUserInfo() {
+        return userInfo;
+    }
+}
+```
+
+3. Data Model Classes
+
+ServiceResponse.java
+
+```java
+public class ServiceResponse<T> {
+    private T successResponse;
+    private boolean success;
+    private String errorMessage;
+    private int statusCode;
+    
+    public ServiceResponse(T successResponse, boolean success, String errorMessage, int statusCode) {
+        this.successResponse = successResponse;
+        this.success = success;
+        this.errorMessage = errorMessage;
+        this.statusCode = statusCode;
+    }
+    
+    // Getters and setters
+    public T getSuccessResponse() { return successResponse; }
+    public boolean isSuccess() { return success; }
+    public String getErrorMessage() { return errorMessage; }
+    public int getStatusCode() { return statusCode; }
+}
+```
+
+ServiceState.java
+
+```java
+import javax.persistence.*;
+import java.time.LocalDateTime;
+
+@Entity
+@Table(name = "EMSC_CONFIG_PARAMETERS")
+public class ServiceState {
+    @Id
+    @GeneratedValue(strategy = GenerationType.SEQUENCE, generator = "emsc_config_seq")
+    @SequenceGenerator(name = "emsc_config_seq", sequenceName = "EMSC_CONFIG_PARAMETERS_SEQ", allocationSize = 1)
+    private Long id;
+    
+    private String serviceName;
+    private String status;
+    private int errorCount;
+    private LocalDateTime lastUpdated;
+    
+    public ServiceState() {}
+    
+    public ServiceState(String serviceName, String status, int errorCount) {
+        this.serviceName = serviceName;
+        this.status = status;
+        this.errorCount = errorCount;
+        this.lastUpdated = LocalDateTime.now();
+    }
+    
+    // Getters and setters
+    public Long getId() { return id; }
+    public String getServiceName() { return serviceName; }
+    public void setServiceName(String serviceName) { this.serviceName = serviceName; }
+    public String getStatus() { return status; }
+    public void setStatus(String status) { this.status = status; }
+    public int getErrorCount() { return errorCount; }
+    public void setErrorCount(int errorCount) { this.errorCount = errorCount; }
+    public LocalDateTime getLastUpdated() { return lastUpdated; }
+    public void setLastUpdated(LocalDateTime lastUpdated) { this.lastUpdated = lastUpdated; }
+}
+```
+
+4. Repository Interface
+
+ServiceStateRepository.java
+
+```java
+import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Modifying;
+import org.springframework.data.jpa.repository.Query;
+import org.springframework.data.repository.query.Param;
+import org.springframework.stereotype.Repository;
+import org.springframework.transaction.annotation.Transactional;
+
+@Repository
+public interface ServiceStateRepository extends JpaRepository<ServiceState, Long> {
+    
+    ServiceState findByServiceName(String serviceName);
+    
+    @Transactional
+    @Modifying
+    @Query("UPDATE ServiceState s SET s.status = :status, s.errorCount = :errorCount, s.lastUpdated = CURRENT_TIMESTAMP WHERE s.serviceName = :serviceName")
+    void updateServiceState(@Param("serviceName") String serviceName, 
+                           @Param("status") String status, 
+                           @Param("errorCount") int errorCount);
+}
+```
+
+5. Exception Classes
+
+ApiCallingException.java
+
+```java
+public class ApiCallingException extends RuntimeException {
+    private String serviceName;
+    private int statusCode;
+    
+    public ApiCallingException(String message, String serviceName, int statusCode) {
+        super(message);
+        this.serviceName = serviceName;
+        this.statusCode = statusCode;
+    }
+    
+    // Getters
+    public String getServiceName() { return serviceName; }
+    public int getStatusCode() { return statusCode; }
+}
+```
+
+ServiceUnavailableException.java
+
+```java
+public class ServiceUnavailableException extends RuntimeException {
+    public ServiceUnavailableException(String message) {
+        super(message);
+    }
+}
+```
+
+6. Database Schema (SQL)
+
+schema.sql
 
 ```sql
-CREATE TABLE "APP_ADMIN_DEV1"."EMSC_CONFIG_PARAMETERS" (
-    "ID" NUMBER(15,0) DEFAULT "APP_ADMIN_DEV1"."EMSC_CONFIG_PARAMETERS_SEQ"."NEXTVAL",
-    "TYPE" VARCHAR2(20) NOT NULL ENABLE,
-    "CATEGORY" VARCHAR2(400 BYTE),
-    "PROPERTY" VARCHAR2(400 BYTE),
-    "VALUE" VARCHAR2(400 BYTE),
-    "TVP" VARCHAR2(400 BYTE),
+CREATE SEQUENCE "EMSC_CONFIG_PARAMETERS_SEQ" START WITH 1 INCREMENT BY 1;
+
+CREATE TABLE "EMSC_CONFIG_PARAMETERS" (
+    "ID" NUMBER(15,0) DEFAULT "EMSC_CONFIG_PARAMETERS_SEQ"."NEXTVAL",
+    "SERVICE_NAME" VARCHAR2(100) NOT NULL,
+    "STATUS" VARCHAR2(20) DEFAULT 'CLOSED',
+    "ERROR_COUNT" NUMBER(10,0) DEFAULT 0,
+    "LAST_UPDATED" TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    "TYPE" VARCHAR2(20),
+    "CATEGORY" VARCHAR2(400),
+    "PROPERTY" VARCHAR2(400),
+    "VALUE" VARCHAR2(400),
+    "TVP" VARCHAR2(400),
     "UPDATABLE" NUMBER(1,0) DEFAULT 0,
-    "MODIFIED_ON" TIMESTAMP (6) WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP NOT NULL ENABLE,
-    "MODIFIED_BY" VARCHAR2(22 BYTE) DEFAULT USER NOT NULL ENABLE,
-    CONSTRAINT "VALID_DATA_TYPE" CHECK ("TYPE" IN ('String', 'Boolean', 'Integer')) ENABLE
-) TABLESPACE "DATA";
+    "MODIFIED_BY" VARCHAR2(22) DEFAULT USER,
+    CONSTRAINT "VALID_DATA_TYPE" CHECK ("TYPE" IN ('String', 'Boolean', 'Integer')),
+    CONSTRAINT "EMSC_CONFIG_PARAMETERS_PK" PRIMARY KEY ("ID")
+);
 
-CREATE UNIQUE INDEX "APP_ADMIN_DEV1"."EMSC_CONFIG_PARAMETERS_PK" ON "APP_ADMIN_DEV1"."EMSC_CONFIG_PARAMETERS" ("ID");
-ALTER TABLE "APP_ADMIN_DEV1"."EMSC_CONFIG_PARAMETERS" ADD CONSTRAINT "EMSC_CONFIG_PARAMETERS_PK" PRIMARY KEY ("ID") USING INDEX ENABLE;
-
--- Add service status tracking columns
-ALTER TABLE "APP_ADMIN_DEV1"."EMSC_CONFIG_PARAMETERS" ADD "SERVICE_NAME" VARCHAR2(100);
-ALTER TABLE "APP_ADMIN_DEV1"."EMSC_CONFIG_PARAMETERS" ADD "STATUS" VARCHAR2(20) DEFAULT 'CLOSED';
-ALTER TABLE "APP_ADMIN_DEV1"."EMSC_CONFIG_PARAMETERS" ADD "LAST_UPDATED" TIMESTAMP (6) WITH TIME ZONE;
-ALTER TABLE "APP_ADMIN_DEV1"."EMSC_CONFIG_PARAMETERS" ADD "ERROR_COUNT" NUMBER(10,0) DEFAULT 0;
-
-GRANT SELECT ON "APP_ADMIN_DEV1"."EMSC_CONFIG_PARAMETERS" TO PUBLIC;
-GRANT SELECT, INSERT, UPDATE ON "APP_ADMIN_DEV1"."EMSC_CONFIG_PARAMETERS" TO "ADMIN" WITH GRANT OPTION;
+CREATE UNIQUE INDEX "EMSC_CONFIG_SERVICE_NAME_IDX" ON "EMSC_CONFIG_PARAMETERS" ("SERVICE_NAME");
 ```
 
-Key Improvements:
+7. Dependencies (pom.xml)
 
-1. Fixed syntax errors in the Java code and SQL statements
-2. Added proper circuit breaker implementation using Resilience4j
-3. Implemented service state tracking based on HTTP response codes
-4. Corrected database table structure with proper constraints
-5. Added service status tracking in the database for circuit breaker state management
-6. Fixed method signatures and variable names for consistency
+```xml
+<dependencies>
+    <dependency>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-starter-web</artifactId>
+    </dependency>
+    <dependency>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-starter-webflux</artifactId>
+    </dependency>
+    <dependency>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-starter-data-jpa</artifactId>
+    </dependency>
+    <dependency>
+        <groupId>io.github.resilience4j</groupId>
+        <artifactId>resilience4j-spring-boot2</artifactId>
+        <version>1.7.1</version>
+    </dependency>
+    <dependency>
+        <groupId>io.github.resilience4j</groupId>
+        <artifactId>resilience4j-circuitbreaker</artifactId>
+        <version>1.7.1</version>
+    </dependency>
+    <dependency>
+        <groupId>com.oracle.database.jdbc</groupId>
+        <artifactId>ojdbc8</artifactId>
+        <version>21.5.0.0</version>
+    </dependency>
+</dependencies>
+```
 
-This implementation provides a robust circuit breaker pattern that can track service health and automatically fail fast when services are experiencing issues, improving system resilience.
+This complete implementation provides:
+
+1. Circuit breaker functionality using Resilience4j
+2. Service state tracking in the database
+3. Automatic circuit opening when error thresholds are exceeded
+4. Proper error handling and exception management
+5. WebClient-based service calls with reactive programming
+6. Database persistence for service state information
+
+The circuit breaker will automatically open when a service fails repeatedly, preventing cascading failures and giving the failing service time to recover.
