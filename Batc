@@ -762,4 +762,37 @@ public class AzureBlobStorageConfig {
 This implementation provides a complete solution that meets all your requirements while being memory efficient and integrated with Azure Blob Storage.
 
 
+Of course. Here is a simple, step-by-step explanation of the process described in the image:
 
+Part 1: When a Connection Fails (The "Problem" Part)
+
+1. A service (RenderingClient) tries to send a message to another service using HTTP.
+2. It is protected by two safety features:
+   · A Retry Policy: If the call fails (e.g., a server error 5xx), it automatically tries again a few times.
+   · A Circuit Breaker: It watches how many calls are failing. If too many fail, it "trips" to stop any more calls from going out, preventing system overload.
+3. If all retries fail:
+   · It saves a "Draft" record in a special database table (ENSC_CONNECTION_FAILED). This record is a reminder that a message needs to be sent later.
+   · It sets a flag in the configuration table to mark the rendering service as "failed" or "unavailable."
+4. If the Circuit Breaker trips (goes "OPEN"):
+   · It immediately stops all new calls and logs each blocked attempt as another "Draft" record in the database.
+5. Later, the Circuit Breaker checks if the problem is fixed:
+   · After a wait time, it allows a test call to go through.
+   · If the test call works, it closes the circuit and sets the "failed" flag to false, marking the service as healthy again.
+
+---
+
+Part 2: The Clean-Up Job (The "Solution" Part)
+
+1. A scheduled job runs every hour to clean up the failed messages.
+2. First, it checks the database table for any "Draft" records caused by the "Rendering Connection failure."
+3. If there are no drafts, the job does nothing and stops.
+4. If there are drafts, it checks the "failed" flag:
+   · If the flag is still true (service is still broken), the job logs a message and stops. It waits for the service to be healthy before trying again.
+   · If the flag is false (service is now healthy), the job starts processing the drafts.
+5. For each draft record:
+   · It finds the original message data stored in cloud storage (Azure Blob).
+   · It adds some extra info about the previous failure (like how many times it tried).
+   · It re-sends this enhanced message to its original destination (Kafka).
+6. After successfully re-sending a message:
+   · It updates that draft record's status from "Draft" to "Published" to show the job is done for that message.
+7. If re-sending a specific message fails, the job leaves it as "Draft" so it can try again in the next hourly run.
