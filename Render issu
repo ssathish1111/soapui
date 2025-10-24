@@ -1,0 +1,128 @@
+Since getCommonConfigTool() returns an XmlTool object directly, let's troubleshoot why the values aren't being fetched. Here are several approaches to debug and fix this:
+
+1. Debug the XmlTool Structure First
+
+```java
+// Check if the XmlTool is properly initialized and can read basic values
+XmlTool commonConfig = template.getCommonConfigTool();
+if (commonConfig == null) {
+    log.error("CommonConfigTool is null!");
+    return "";
+}
+
+// Test with a known existing node
+String appVersion = commonConfig.getValue("AppVersion");
+log.debug("AppVersion: {}", appVersion); // Should print "2504.0"
+
+// If this works, then the XmlTool is properly initialized
+```
+
+2. Check XPath Syntax for XmlTool
+
+```java
+// Try different XPath patterns that XmlTool might support
+String userType = getUserType().toUpperCase().trim();
+
+// Method 1: Direct value access
+String fromAddress = commonConfig.getValue("FromAddress/" + userType);
+String fromName = commonConfig.getValue("FromName/" + userType);
+
+// Method 2: Using getText() with specific node
+XmlTool fromAddressNode = commonConfig.getNode("FromAddress");
+if (fromAddressNode != null) {
+    XmlTool specificNode = fromAddressNode.getNode(userType);
+    if (specificNode != null) {
+        String fromAddress = specificNode.getText();
+    }
+}
+```
+
+3. Check XmlTool API Methods
+
+Since it's XmlTool, check what methods are available:
+
+```java
+// Common XmlTool methods to try:
+String fromAddress = commonConfig.getString("FromAddress/" + userType);
+String fromAddress = commonConfig.getText("FromAddress/" + userType);
+String fromAddress = commonConfig.getAttribute("FromAddress/" + userType, "value");
+
+// Or try getting the node first
+XmlTool node = commonConfig.getNode("FromAddress/" + userType);
+if (node != null) {
+    String fromAddress = node.getText();
+    // or
+    String fromAddress = node.getStringValue();
+    // or  
+    String fromAddress = node.getValue();
+}
+```
+
+4. Debug the Actual XML Content
+
+```java
+// Print the actual XML content to see the structure
+log.debug("XML Content: {}", commonConfig.toString());
+// or
+log.debug("XML as String: {}", commonConfig.getXmlString());
+
+// Check all FromAddress children
+XmlTool fromAddressNode = commonConfig.getNode("FromAddress");
+if (fromAddressNode != null) {
+    List<XmlTool> children = fromAddressNode.getChildren();
+    for (XmlTool child : children) {
+        log.debug("FromAddress child: {} = {}", child.getName(), child.getText());
+    }
+}
+```
+
+5. Alternative Approach - Manual XML Parsing
+
+```java
+// If XmlTool methods don't work, extract raw XML and parse manually
+String xmlContent = commonConfig.toString();
+// Use standard Java XML parsing as fallback
+```
+
+6. Complete Debugging Example
+
+```java
+public String getFromAddress() {
+    try {
+        XmlTool commonConfig = template.getCommonConfigTool();
+        String userType = getUserType().toUpperCase().trim();
+        
+        log.debug("UserType: {}", userType);
+        log.debug("CommonConfig null? {}", commonConfig == null);
+        
+        if (commonConfig != null) {
+            // Test basic access
+            String test = commonConfig.getValue("AppVersion");
+            log.debug("Test AppVersion: {}", test);
+            
+            // Try FromAddress
+            String fromAddress = commonConfig.getValue("FromAddress/" + userType);
+            log.debug("FromAddress result: {}", fromAddress);
+            
+            // If still null, try node-by-node
+            if (fromAddress == null) {
+                XmlTool faNode = commonConfig.getNode("FromAddress");
+                if (faNode != null) {
+                    XmlTool typeNode = faNode.getNode(userType);
+                    if (typeNode != null) {
+                        fromAddress = typeNode.getText();
+                        log.debug("Node-by-node result: {}", fromAddress);
+                    }
+                }
+            }
+            
+            return fromAddress != null ? fromAddress : "";
+        }
+    } catch (Exception e) {
+        log.error("Error getting FromAddress", e);
+    }
+    return "";
+}
+```
+
+Which specific error are you encountering? Are you getting null values, exceptions, or something else? The debugging output will help identify the exact issue.
