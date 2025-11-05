@@ -1,0 +1,380 @@
+Based on your table schema, I can see you have two main tables for handling file formats:
+
+1. EMSC_FILE_FORMAT_DELIMITED - for CSV/delimited file mappings
+2. EMSC_FILE_FORMAT_JSON_XML - for JSON/XML mappings
+
+Here's the best approach to achieve your data processing:
+
+Database-Driven Mapping Approach
+
+1. First, Create SQL Insert Statements for Your Mappings
+
+```sql
+-- Insert CSV/Delimited Mappings
+INSERT INTO EMSC_FILE_FORMAT_DELIMITED (
+    FILE_FORMAT_ID, EXTERNAL_COLUMN_NAME, COLUMN_POSITION, 
+    COLUMN_FORMAT, COLUMN_DATA_TYPE, MESSAGE_ATTRIBUTE, COLUMN_ACTION
+) VALUES 
+(4, 'ACCOUNT_NUMBER', 1, NULL, 'String', 'billingAccount/id', 'Copy'),
+(4, 'NOTIFY_ID', 2, NULL, 'String', 'characteristic/NotificationId', 'Copy'),
+(4, 'ROLE_NAME', 3, NULL, 'String', 'roleName', 'Copy'),
+(4, 'TYPE', 4, NULL, 'String', 'type', 'Copy'),
+(4, 'SUBTYPE', 5, NULL, 'String', 'subType', 'Copy'),
+(4, 'STATUS', 6, NULL, 'String', 'fastatus', 'Copy'),
+(4, 'NOTE_TYPE', 7, NULL, 'String', 'NotificationType', 'Copy'),
+(4, 'FREE_TYPE', 8, '{FREE_TYPE?.toLowerCase()}', 'String', 'messageType', 'Copy'),
+(4, 'FREE_VALUE', 9, '{FREE_TYPE == ''EMAIL'' ? FREE_VALUE : ''''}', 'String', 'receiver[0]/email', 'Copy'),
+(4, 'FREE_VALUE', 9, '{FREE_TYPE == ''SMS'' ? FREE_VALUE : ''''}', 'String', 'receiver[0]/phoneNumber', 'Copy'),
+(4, 'TIMEZONE', 10, NULL, 'String', 'timeZone', 'Copy'),
+(4, 'PROVINCE', 11, NULL, 'String', 'receiver[0]/province', 'Copy');
+
+-- Insert JSON Mappings  
+INSERT INTO EMSC_FILE_FORMAT_JSON_XML (
+    FILE_FORMAT_ID, EXTERNAL_COLUMN_NAME, COLUMN_FORMAT,
+    COLUMN_DATA_TYPE, MESSAGE_ATTRIBUTE, COLUMN_ACTION
+) VALUES
+(4, 'ReportField1', NULL, 'String', 'characteristic/ReportField1', 'Json'),
+(4, 'ReportField2', NULL, 'String', 'characteristic/ReportField2', 'Json'),
+(4, 'RequestID', NULL, 'String', 'characteristic/RequestID', 'Json'),
+(4, 'Category', NULL, 'String', 'contentCategory', 'Json'),
+(4, 'Language', '{Language?.toLowerCase()}', 'String', 'contentLanguage', 'Json'),
+(4, 'Address/PostalAddress/Addr1', NULL, 'String', 'receiver[0]/addr1', 'Json'),
+(4, 'Address/PostalAddress/Addr2', NULL, 'String', 'receiver[0]/addr2', 'Json'),
+(4, 'Address/PostalAddress/Country', NULL, 'String', 'receiver[0]/country', 'Json'),
+(4, 'Contact/Firstname', NULL, 'String', 'receiver[0]/firstName', 'Json'),
+(4, 'Contact/Lastname', NULL, 'String', 'receiver[0]/lastName', 'Json'),
+(4, 'Address/PhoneNumber', NULL, 'String', 'receiver[0]/phoneNumber', 'Json'),
+(4, 'Address/PostalAddress/PostalCode', NULL, 'String', 'receiver[0]/postalCode', 'Json'),
+(4, 'Address/PostalAddress/StateProv', NULL, 'String', 'receiver[0]/stateProv', 'Json');
+```
+
+2. Enhanced Processing Code Using Database Mappings
+
+```java
+@Service
+public class FileProcessingService {
+    
+    @Autowired
+    private FileFormatDelimitedRepository delimitedRepo;
+    
+    @Autowired
+    private FileFormatJsonXmlRepository jsonXmlRepo;
+    
+    public void processFileWithDatabaseMappings(BatchContext context) throws IOException {
+        var file = context.getFile();
+        var delimiter = context.getBodyFileFormat().getColumnDelimiter();
+        var charset = context.getFileCharset();
+        Long fileFormatId = context.getBodyFileFormat().getId();
+        
+        // Load mappings from database
+        List<FileFormatDelimited> csvMappings = delimitedRepo.findByFileFormatId(fileFormatId);
+        List<FileFormatJsonXml> jsonMappings = jsonXmlRepo.findByFileFormatId(fileFormatId);
+        
+        JsonNode sourceJson = clobDecoded();
+        context.setSourceJson(sourceJson);
+        
+        // Group processing logic (similar to before but using DB mappings)
+        processGroupedFile(context, csvMappings, jsonMappings);
+    }
+    
+    private void processGroupedFile(BatchContext context, 
+                                   List<FileFormatDelimited> csvMappings,
+                                   List<FileFormatJsonXml> jsonMappings) {
+        // Your existing grouping logic here, but use database mappings
+        
+        List<String> emailRecords = new ArrayList<>();
+        List<Integer> emailLineNumbers = new ArrayList<>();
+        List<String> phoneRecords = new ArrayList<>();
+        List<Integer> phoneLineNumbers = new ArrayList<>();
+        String currentAccountId = null;
+        
+        // ... (your existing line processing logic)
+        
+        // For each group, call:
+        processGroupWithDatabaseMappings(context, emailRecords, emailLineNumbers, 
+                                       currentAccountId, csvMappings, jsonMappings, "EMAIL");
+        processGroupWithDatabaseMappings(context, phoneRecords, phoneLineNumbers,
+                                       currentAccountId, csvMappings, jsonMappings, "SMS");
+    }
+    
+    private void processGroupWithDatabaseMappings(BatchContext context, 
+                                                List<String> lines, 
+                                                List<Integer> lineNumbers,
+                                                String accountId,
+                                                List<FileFormatDelimited> csvMappings,
+                                                List<FileFormatJsonXml> jsonMappings,
+                                                String deliveryType) {
+        if (lines.isEmpty()) return;
+        
+        try {
+            ObjectNode jsonRecord = context.getJsonSelection().deepCopy();
+            
+            // Initialize structure
+            initializeJsonStructure(jsonRecord);
+            
+            for (int receiverIndex = 0; receiverIndex < lines.size(); receiverIndex++) {
+                String line = lines.get(receiverIndex);
+                int lineNumber = lineNumbers.get(receiverIndex);
+                String[] columns = line.split(Pattern.quote(context.getBodyFileFormat().getColumnDelimiter()), -1);
+                
+                // Find matching JSON data
+                JsonNode notificationJson = findNotificationByAccountId(context.getSourceJson(), accountId);
+                
+                Map<String, Object> columnMap = new HashMap<>();
+                
+                // Process CSV mappings from database
+                processCsvMappings(columns, csvMappings, columnMap, accountId);
+                
+                // Ensure receiver object exists
+                ObjectNode currentReceiver = ensureReceiverExists(jsonRecord, receiverIndex);
+                
+                // Apply CSV mappings to output JSON
+                applyCsvMappingsToOutput(columns, csvMappings, columnMap, jsonRecord, currentReceiver, receiverIndex);
+                
+                // Apply JSON mappings to output JSON
+                if (notificationJson != null) {
+                    applyJsonMappingsToOutput(notificationJson, jsonMappings, columnMap, jsonRecord, currentReceiver, receiverIndex);
+                }
+            }
+            
+            // Send notification
+            EnumDeliveryMethod method = "EMAIL".equalsIgnoreCase(deliveryType) ? EMAIL : SMS;
+            sendNotification(context, method, String.join("\n", lines), lineNumbers.get(0), jsonRecord.deepCopy());
+            
+        } catch (Exception e) {
+            log.error("Error processing grouped lines for AccountID {}: {}", accountId, e.getMessage(), e);
+            context.incrementRecordsFailed();
+        }
+    }
+    
+    private void processCsvMappings(String[] columns, 
+                                   List<FileFormatDelimited> csvMappings,
+                                   Map<String, Object> columnMap,
+                                   String accountId) {
+        for (FileFormatDelimited mapping : csvMappings) {
+            if ("Copy".equalsIgnoreCase(mapping.getColumnAction())) {
+                Integer colIndex = mapping.getColumnPosition() != null ? mapping.getColumnPosition() - 1 : null;
+                String columnKey = mapping.getExternalColumnName();
+                if (colIndex != null && colIndex >= 0 && colIndex < columns.length && 
+                    columnKey != null && !columnKey.isEmpty()) {
+                    String value = columns[colIndex].trim();
+                    columnMap.put(columnKey.toUpperCase(), value);
+                }
+            }
+        }
+        
+        // Add key fields for expression evaluation
+        String freeType = (String) columnMap.getOrDefault("FREE_TYPE", "");
+        String freeValue = (String) columnMap.getOrDefault("FREE_VALUE", "");
+        columnMap.put("FREE_TYPE", freeType);
+        columnMap.put("FREE_VALUE", freeValue);
+        columnMap.put("ACCOUNT_ID", accountId);
+    }
+    
+    private void applyCsvMappingsToOutput(String[] columns,
+                                         List<FileFormatDelimited> csvMappings,
+                                         Map<String, Object> columnMap,
+                                         ObjectNode jsonRecord,
+                                         ObjectNode currentReceiver,
+                                         int receiverIndex) {
+        for (FileFormatDelimited mapping : csvMappings) {
+            String rawValue = "";
+            
+            if ("Copy".equalsIgnoreCase(mapping.getColumnAction())) {
+                Integer colIndex = mapping.getColumnPosition() != null ? mapping.getColumnPosition() - 1 : null;
+                if (colIndex != null && colIndex >= 0 && colIndex < columns.length) {
+                    rawValue = columns[colIndex].trim();
+                }
+            }
+            
+            // Apply expression transformations from database
+            if (mapping.getColumnFormat() != null && mapping.getColumnFormat().contains("{")) {
+                columnMap.put("ELEMENT_VAL", rawValue);
+                rawValue = evaluateExpression(mapping.getColumnFormat(), columnMap);
+            }
+            
+            if (rawValue == null || rawValue.isBlank()) continue;
+            
+            // Set value in appropriate location
+            setValueByPath(jsonRecord, currentReceiver, mapping.getMessageAttribute(), 
+                          rawValue, mapping.getColumnDataType(), receiverIndex);
+        }
+    }
+    
+    private void applyJsonMappingsToOutput(JsonNode notificationJson,
+                                          List<FileFormatJsonXml> jsonMappings,
+                                          Map<String, Object> columnMap,
+                                          ObjectNode jsonRecord,
+                                          ObjectNode currentReceiver,
+                                          int receiverIndex) {
+        for (FileFormatJsonXml mapping : jsonMappings) {
+            String rawValue = "";
+            
+            if ("Json".equalsIgnoreCase(mapping.getColumnAction())) {
+                // Extract value from JSON using external column name as JSON path
+                rawValue = extractValueFromJson(notificationJson, mapping.getExternalColumnName());
+                
+                // Add to columnMap for expression evaluation
+                if (!rawValue.isEmpty()) {
+                    String key = getLastPathComponent(mapping.getExternalColumnName());
+                    columnMap.put(key, rawValue);
+                }
+            }
+            
+            // Apply expression transformations from database
+            if (mapping.getColumnFormat() != null && mapping.getColumnFormat().contains("{")) {
+                columnMap.put("ELEMENT_VAL", rawValue);
+                rawValue = evaluateExpression(mapping.getColumnFormat(), columnMap);
+            }
+            
+            if (rawValue == null || rawValue.isBlank()) continue;
+            
+            // Set value in appropriate location
+            setValueByPath(jsonRecord, currentReceiver, mapping.getMessageAttribute(),
+                          rawValue, mapping.getColumnDataType(), receiverIndex);
+        }
+    }
+    
+    private void setValueByPath(ObjectNode jsonRecord, 
+                               ObjectNode currentReceiver,
+                               String messageAttribute, 
+                               String value, 
+                               String dataType,
+                               int receiverIndex) {
+        JsonNode valueNode = convertToJsonNode(value, dataType);
+        
+        if (messageAttribute.startsWith("receiver[0]/")) {
+            String receiverField = messageAttribute.replace("receiver[0]/", "");
+            setValueInJson(currentReceiver, receiverField, valueNode);
+        } else if (messageAttribute.startsWith("characteristic/")) {
+            String charField = messageAttribute.replace("characteristic/", "");
+            setValueInJson((ObjectNode) jsonRecord.get("characteristic"), charField, valueNode);
+        } else if (messageAttribute.startsWith("billingAccount/")) {
+            String billingField = messageAttribute.replace("billingAccount/", "");
+            setValueInJson((ObjectNode) jsonRecord.get("billingAccount"), billingField, valueNode);
+        } else {
+            setValueInJson(jsonRecord, messageAttribute, valueNode);
+        }
+    }
+    
+    private ObjectNode ensureReceiverExists(ObjectNode jsonRecord, int receiverIndex) {
+        ArrayNode receiverArray = (ArrayNode) jsonRecord.get("receiver");
+        while (receiverArray.size() <= receiverIndex) {
+            receiverArray.addObject();
+        }
+        return (ObjectNode) receiverArray.get(receiverIndex);
+    }
+    
+    private void initializeJsonStructure(ObjectNode jsonRecord) {
+        if (!jsonRecord.has("characteristic")) {
+            jsonRecord.putObject("characteristic");
+        }
+        if (!jsonRecord.has("billingAccount")) {
+            jsonRecord.putObject("billingAccount");
+        }
+        if (!jsonRecord.has("receiver")) {
+            jsonRecord.putArray("receiver");
+        }
+    }
+    
+    // Keep your existing helper methods:
+    // extractValueFromJson, evaluateExpression, findNotificationByAccountId, etc.
+}
+```
+
+3. Repository Interfaces
+
+```java
+@Repository
+public interface FileFormatDelimitedRepository extends JpaRepository<FileFormatDelimited, Long> {
+    List<FileFormatDelimited> findByFileFormatId(Long fileFormatId);
+    List<FileFormatDelimited> findByFileFormatIdOrderByColumnPosition(Long fileFormatId);
+}
+
+@Repository  
+public interface FileFormatJsonXmlRepository extends JpaRepository<FileFormatJsonXml, Long> {
+    List<FileFormatJsonXml> findByFileFormatId(Long fileFormatId);
+}
+```
+
+4. Entity Classes
+
+```java
+@Entity
+@Table(name = "EMSC_FILE_FORMAT_DELIMITED")
+public class FileFormatDelimited {
+    @Id
+    @GeneratedValue(strategy = GenerationType.SEQUENCE, generator = "file_format_delimited_seq")
+    private Long id;
+    
+    @Column(name = "FILE_FORMAT_ID")
+    private Long fileFormatId;
+    
+    @Column(name = "EXTERNAL_COLUMN_NAME")
+    private String externalColumnName;
+    
+    @Column(name = "COLUMN_POSITION")
+    private Integer columnPosition;
+    
+    @Column(name = "COLUMN_FORMAT")
+    private String columnFormat;
+    
+    @Column(name = "COLUMN_DATA_TYPE")
+    private String columnDataType;
+    
+    @Column(name = "MESSAGE_ATTRIBUTE")
+    private String messageAttribute;
+    
+    @Column(name = "COLUMN_ACTION")
+    private String columnAction;
+    
+    // getters and setters
+}
+
+@Entity
+@Table(name = "EMSC_FILE_FORMAT_JSON_XML")
+public class FileFormatJsonXml {
+    @Id
+    @GeneratedValue(strategy = GenerationType.SEQUENCE, generator = "file_format_json_xml_seq")
+    private Long id;
+    
+    @Column(name = "FILE_FORMAT_ID")
+    private Long fileFormatId;
+    
+    @Column(name = "EXTERNAL_COLUMN_NAME")
+    private String externalColumnName;
+    
+    @Column(name = "COLUMN_FORMAT")
+    private String columnFormat;
+    
+    @Column(name = "COLUMN_DATA_TYPE")
+    private String columnDataType;
+    
+    @Column(name = "MESSAGE_ATTRIBUTE")
+    private String messageAttribute;
+    
+    @Column(name = "COLUMN_ACTION")
+    private String columnAction;
+    
+    // getters and setters
+}
+```
+
+Benefits of This Approach:
+
+1. Database-Driven: All mappings stored in database for easy maintenance
+2. Dynamic: Can change mappings without code deployment
+3. Scalable: Easy to add new file formats and mappings
+4. Auditable: All mapping changes tracked in database
+5. Reusable: Same code can handle multiple file formats
+
+Configuration Management:
+
+You can create an admin interface to:
+
+· Add/edit/delete mappings
+· Test mappings
+· Version control mappings
+· Enable/disable specific mappings
+
+This approach separates the business logic from configuration, making your system much more maintainable and flexible.
