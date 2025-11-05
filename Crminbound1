@@ -1,0 +1,933 @@
+Here's the complete working code:
+
+1. Entity Classes
+
+```java
+@Entity
+@Table(name = "EMSC_FILE_FORMAT_DELIMITED")
+public class FileFormatDelimited {
+    @Id
+    @GeneratedValue(strategy = GenerationType.SEQUENCE, generator = "file_format_delimited_seq")
+    @SequenceGenerator(name = "file_format_delimited_seq", sequenceName = "EMSC_FILE_FORMAT_DELIMITED_ID_SEQ", allocationSize = 1)
+    private Long id;
+    
+    @Column(name = "FILE_FORMAT_ID")
+    private Long fileFormatId;
+    
+    @Column(name = "EXTERNAL_COLUMN_NAME")
+    private String externalColumnName;
+    
+    @Column(name = "COLUMN_POSITION")
+    private Integer columnPosition;
+    
+    @Column(name = "COLUMN_FORMAT")
+    private String columnFormat;
+    
+    @Column(name = "COLUMN_DATA_TYPE")
+    private String columnDataType;
+    
+    @Column(name = "MESSAGE_ATTRIBUTE")
+    private String messageAttribute;
+    
+    @Column(name = "COLUMN_ACTION")
+    private String columnAction;
+    
+    @Column(name = "ALTERNATE_VALUE")
+    private String alternateValue;
+    
+    // Constructors
+    public FileFormatDelimited() {}
+    
+    // Getters and Setters
+    public Long getId() { return id; }
+    public void setId(Long id) { this.id = id; }
+    public Long getFileFormatId() { return fileFormatId; }
+    public void setFileFormatId(Long fileFormatId) { this.fileFormatId = fileFormatId; }
+    public String getExternalColumnName() { return externalColumnName; }
+    public void setExternalColumnName(String externalColumnName) { this.externalColumnName = externalColumnName; }
+    public Integer getColumnPosition() { return columnPosition; }
+    public void setColumnPosition(Integer columnPosition) { this.columnPosition = columnPosition; }
+    public String getColumnFormat() { return columnFormat; }
+    public void setColumnFormat(String columnFormat) { this.columnFormat = columnFormat; }
+    public String getColumnDataType() { return columnDataType; }
+    public void setColumnDataType(String columnDataType) { this.columnDataType = columnDataType; }
+    public String getMessageAttribute() { return messageAttribute; }
+    public void setMessageAttribute(String messageAttribute) { this.messageAttribute = messageAttribute; }
+    public String getColumnAction() { return columnAction; }
+    public void setColumnAction(String columnAction) { this.columnAction = columnAction; }
+    public String getAlternateValue() { return alternateValue; }
+    public void setAlternateValue(String alternateValue) { this.alternateValue = alternateValue; }
+}
+```
+
+```java
+@Entity
+@Table(name = "EMSC_FILE_FORMAT_JSON_XML")
+public class FileFormatJsonXml {
+    @Id
+    @GeneratedValue(strategy = GenerationType.SEQUENCE, generator = "file_format_json_xml_seq")
+    @SequenceGenerator(name = "file_format_json_xml_seq", sequenceName = "EMSC_FILE_FORMAT_JSON_XML_ID_SEQ", allocationSize = 1)
+    private Long id;
+    
+    @Column(name = "FILE_FORMAT_ID")
+    private Long fileFormatId;
+    
+    @Column(name = "EXTERNAL_COLUMN_NAME")
+    private String externalColumnName;
+    
+    @Column(name = "COLUMN_FORMAT")
+    private String columnFormat;
+    
+    @Column(name = "COLUMN_DATA_TYPE")
+    private String columnDataType;
+    
+    @Column(name = "MESSAGE_ATTRIBUTE")
+    private String messageAttribute;
+    
+    @Column(name = "COLUMN_ACTION")
+    private String columnAction;
+    
+    // Constructors
+    public FileFormatJsonXml() {}
+    
+    // Getters and Setters
+    public Long getId() { return id; }
+    public void setId(Long id) { this.id = id; }
+    public Long getFileFormatId() { return fileFormatId; }
+    public void setFileFormatId(Long fileFormatId) { this.fileFormatId = fileFormatId; }
+    public String getExternalColumnName() { return externalColumnName; }
+    public void setExternalColumnName(String externalColumnName) { this.externalColumnName = externalColumnName; }
+    public String getColumnFormat() { return columnFormat; }
+    public void setColumnFormat(String columnFormat) { this.columnFormat = columnFormat; }
+    public String getColumnDataType() { return columnDataType; }
+    public void setColumnDataType(String columnDataType) { this.columnDataType = columnDataType; }
+    public String getMessageAttribute() { return messageAttribute; }
+    public void setMessageAttribute(String messageAttribute) { this.messageAttribute = messageAttribute; }
+    public String getColumnAction() { return columnAction; }
+    public void setColumnAction(String columnAction) { this.columnAction = columnAction; }
+}
+```
+
+2. Repository Interfaces
+
+```java
+@Repository
+public interface FileFormatDelimitedRepository extends JpaRepository<FileFormatDelimited, Long> {
+    List<FileFormatDelimited> findByFileFormatId(Long fileFormatId);
+    List<FileFormatDelimited> findByFileFormatIdOrderByColumnPosition(Long fileFormatId);
+}
+
+@Repository
+public interface FileFormatJsonXmlRepository extends JpaRepository<FileFormatJsonXml, Long> {
+    List<FileFormatJsonXml> findByFileFormatId(Long fileFormatId);
+}
+```
+
+3. Main Processing Service
+
+```java
+@Service
+@Slf4j
+public class FileProcessingService {
+    
+    @Autowired
+    private FileFormatDelimitedRepository delimitedRepo;
+    
+    @Autowired
+    private FileFormatJsonXmlRepository jsonXmlRepo;
+    
+    private static final String SUCCESS = "SUCCESS";
+    
+    public void processFileWithDatabaseMappings(BatchContext context) throws IOException {
+        var file = context.getFile();
+        var delimiter = context.getBodyFileFormat().getColumnDelimiter();
+        var charset = context.getFileCharset();
+        Long fileFormatId = context.getBodyFileFormat().getId();
+        int firstRowNum = context.getFileConfig().getFirstRowPosition() == null ? 0 : context.getFileConfig().getFirstRowPosition() - 1;
+
+        // Load mappings from database
+        List<FileFormatDelimited> csvMappings = delimitedRepo.findByFileFormatIdOrderByColumnPosition(fileFormatId);
+        List<FileFormatJsonXml> jsonMappings = jsonXmlRepo.findByFileFormatId(fileFormatId);
+        
+        JsonNode sourceJson = clobDecoded();
+        context.setSourceJson(sourceJson);
+
+        List<String> emailRecords = new ArrayList<>();
+        List<Integer> emailLineNumbers = new ArrayList<>();
+        List<String> phoneRecords = new ArrayList<>();
+        List<Integer> phoneLineNumbers = new ArrayList<>();
+        String currentAccountId = null;
+        int lineNumber = 0;
+
+        try (Stream<String> lines = Files.lines(file.toPath(), charset)) {
+            Iterator<String> iterator = lines.iterator();
+
+            while (iterator.hasNext()) {
+                String line = iterator.next();
+                lineNumber++;
+                if (lineNumber <= firstRowNum || line.isBlank()) continue;
+
+                String isValidRecord = validateSingleRecordExecute(context, line, lineNumber);
+                if (!SUCCESS.equals(isValidRecord)) {
+                    saveBatchNotification(context, "EMAIL", line, lineNumber, "FAILED", isValidRecord);
+                    context.incrementRecordsFailed();
+                    continue;
+                }
+                
+                String[] columns = line.split(Pattern.quote(delimiter), -1);
+                final int ACCOUNT_ID_INDEX = 0;
+                final int PREF_TYPE_INDEX = 7;
+
+                String accountId = columns.length > ACCOUNT_ID_INDEX ? columns[ACCOUNT_ID_INDEX].trim() : "";
+                String prefType = columns.length > PREF_TYPE_INDEX ? columns[PREF_TYPE_INDEX].trim().toUpperCase() : "";
+                
+                // If account ID changes, process previous group
+                if (currentAccountId != null && !accountId.equals(currentAccountId)) {
+                    processGroupWithDatabaseMappings(context, emailRecords, emailLineNumbers, 
+                                                   currentAccountId, csvMappings, jsonMappings, "EMAIL");
+                    processGroupWithDatabaseMappings(context, phoneRecords, phoneLineNumbers,
+                                                   currentAccountId, csvMappings, jsonMappings, "SMS");
+                    
+                    emailRecords.clear();
+                    emailLineNumbers.clear();
+                    phoneRecords.clear();
+                    phoneLineNumbers.clear();
+                }
+
+                currentAccountId = accountId;
+
+                if ("EMAIL".equals(prefType)) {
+                    emailRecords.add(line);
+                    emailLineNumbers.add(lineNumber);
+                } else if ("SMS".equals(prefType)) {
+                    phoneRecords.add(line);
+                    phoneLineNumbers.add(lineNumber);
+                }
+            }
+
+            // Process remaining group
+            if (currentAccountId != null) {
+                processGroupWithDatabaseMappings(context, emailRecords, emailLineNumbers, 
+                                               currentAccountId, csvMappings, jsonMappings, "EMAIL");
+                processGroupWithDatabaseMappings(context, phoneRecords, phoneLineNumbers,
+                                               currentAccountId, csvMappings, jsonMappings, "SMS");
+            }
+        } catch (IOException e) {
+            throw new RuntimeException("Error reading file: " + e.getMessage(), e);
+        }
+    }
+    
+    private void processGroupWithDatabaseMappings(BatchContext context, 
+                                                List<String> lines, 
+                                                List<Integer> lineNumbers,
+                                                String accountId,
+                                                List<FileFormatDelimited> csvMappings,
+                                                List<FileFormatJsonXml> jsonMappings,
+                                                String deliveryType) {
+        if (lines.isEmpty()) return;
+        
+        try {
+            ObjectMapper mapper = new ObjectMapper();
+            ObjectNode jsonRecord = mapper.createObjectNode();
+            
+            // Initialize structure
+            initializeJsonStructure(jsonRecord);
+            
+            for (int receiverIndex = 0; receiverIndex < lines.size(); receiverIndex++) {
+                String line = lines.get(receiverIndex);
+                int lineNumber = lineNumbers.get(receiverIndex);
+                String[] columns = line.split(Pattern.quote(context.getBodyFileFormat().getColumnDelimiter()), -1);
+                
+                // Find matching JSON data
+                JsonNode notificationJson = findNotificationByAccountId(context.getSourceJson(), accountId);
+                
+                Map<String, Object> columnMap = new HashMap<>();
+                
+                // Process CSV mappings from database
+                processCsvMappings(columns, csvMappings, columnMap, accountId);
+                
+                // Ensure receiver object exists
+                ObjectNode currentReceiver = ensureReceiverExists(jsonRecord, receiverIndex);
+                
+                // Apply CSV mappings to output JSON
+                applyCsvMappingsToOutput(columns, csvMappings, columnMap, jsonRecord, currentReceiver, receiverIndex);
+                
+                // Apply JSON mappings to output JSON
+                if (notificationJson != null) {
+                    applyJsonMappingsToOutput(notificationJson, jsonMappings, columnMap, jsonRecord, currentReceiver, receiverIndex);
+                }
+            }
+            
+            // Send notification
+            String method = "EMAIL".equalsIgnoreCase(deliveryType) ? "EMAIL" : "SMS";
+            sendNotification(context, method, String.join("\n", lines), lineNumbers.get(0), jsonRecord);
+            
+        } catch (Exception e) {
+            log.error("Error processing grouped lines for AccountID {}: {}", accountId, e.getMessage(), e);
+            context.incrementRecordsFailed();
+        }
+    }
+    
+    private void processCsvMappings(String[] columns, 
+                                   List<FileFormatDelimited> csvMappings,
+                                   Map<String, Object> columnMap,
+                                   String accountId) {
+        for (FileFormatDelimited mapping : csvMappings) {
+            if ("Copy".equalsIgnoreCase(mapping.getColumnAction())) {
+                Integer colIndex = mapping.getColumnPosition() != null ? mapping.getColumnPosition() - 1 : null;
+                String columnKey = mapping.getExternalColumnName();
+                if (colIndex != null && colIndex >= 0 && colIndex < columns.length && 
+                    columnKey != null && !columnKey.isEmpty()) {
+                    String value = columns[colIndex].trim();
+                    columnMap.put(columnKey.toUpperCase(), value);
+                }
+            }
+        }
+        
+        // Add key fields for expression evaluation
+        String freeType = (String) columnMap.getOrDefault("FREE_TYPE", "");
+        String freeValue = (String) columnMap.getOrDefault("FREE_VALUE", "");
+        columnMap.put("FREE_TYPE", freeType);
+        columnMap.put("FREE_VALUE", freeValue);
+        columnMap.put("ACCOUNT_ID", accountId);
+    }
+    
+    private void applyCsvMappingsToOutput(String[] columns,
+                                         List<FileFormatDelimited> csvMappings,
+                                         Map<String, Object> columnMap,
+                                         ObjectNode jsonRecord,
+                                         ObjectNode currentReceiver,
+                                         int receiverIndex) {
+        for (FileFormatDelimited mapping : csvMappings) {
+            String rawValue = "";
+            
+            if ("Copy".equalsIgnoreCase(mapping.getColumnAction())) {
+                Integer colIndex = mapping.getColumnPosition() != null ? mapping.getColumnPosition() - 1 : null;
+                if (colIndex != null && colIndex >= 0 && colIndex < columns.length) {
+                    rawValue = columns[colIndex].trim();
+                }
+            }
+            
+            // Apply expression transformations from database
+            if (mapping.getColumnFormat() != null && mapping.getColumnFormat().contains("{")) {
+                columnMap.put("ELEMENT_VAL", rawValue);
+                rawValue = evaluateExpression(mapping.getColumnFormat(), columnMap);
+            }
+            
+            if (rawValue == null || rawValue.isBlank()) continue;
+            
+            // Set value in appropriate location
+            setValueByPath(jsonRecord, currentReceiver, mapping.getMessageAttribute(), 
+                          rawValue, mapping.getColumnDataType(), receiverIndex);
+        }
+    }
+    
+    private void applyJsonMappingsToOutput(JsonNode notificationJson,
+                                          List<FileFormatJsonXml> jsonMappings,
+                                          Map<String, Object> columnMap,
+                                          ObjectNode jsonRecord,
+                                          ObjectNode currentReceiver,
+                                          int receiverIndex) {
+        for (FileFormatJsonXml mapping : jsonMappings) {
+            String rawValue = "";
+            
+            if ("Json".equalsIgnoreCase(mapping.getColumnAction())) {
+                // Extract value from JSON using external column name as JSON path
+                rawValue = extractValueFromJson(notificationJson, mapping.getExternalColumnName());
+                
+                // Add to columnMap for expression evaluation
+                if (!rawValue.isEmpty()) {
+                    String key = getLastPathComponent(mapping.getExternalColumnName());
+                    columnMap.put(key, rawValue);
+                }
+            }
+            
+            // Apply expression transformations from database
+            if (mapping.getColumnFormat() != null && mapping.getColumnFormat().contains("{")) {
+                columnMap.put("ELEMENT_VAL", rawValue);
+                rawValue = evaluateExpression(mapping.getColumnFormat(), columnMap);
+            }
+            
+            if (rawValue == null || rawValue.isBlank()) continue;
+            
+            // Set value in appropriate location
+            setValueByPath(jsonRecord, currentReceiver, mapping.getMessageAttribute(),
+                          rawValue, mapping.getColumnDataType(), receiverIndex);
+        }
+    }
+    
+    private void setValueByPath(ObjectNode jsonRecord, 
+                               ObjectNode currentReceiver,
+                               String messageAttribute, 
+                               String value, 
+                               String dataType,
+                               int receiverIndex) {
+        JsonNode valueNode = convertToJsonNode(value, dataType);
+        
+        if (messageAttribute.startsWith("receiver[0]/")) {
+            String receiverField = messageAttribute.replace("receiver[0]/", "");
+            setValueInJson(currentReceiver, receiverField, valueNode);
+        } else if (messageAttribute.startsWith("characteristic/")) {
+            String charField = messageAttribute.replace("characteristic/", "");
+            if (jsonRecord.has("characteristic")) {
+                setValueInJson((ObjectNode) jsonRecord.get("characteristic"), charField, valueNode);
+            }
+        } else if (messageAttribute.startsWith("billingAccount/")) {
+            String billingField = messageAttribute.replace("billingAccount/", "");
+            if (jsonRecord.has("billingAccount")) {
+                setValueInJson((ObjectNode) jsonRecord.get("billingAccount"), billingField, valueNode);
+            }
+        } else {
+            setValueInJson(jsonRecord, messageAttribute, valueNode);
+        }
+    }
+    
+    private ObjectNode ensureReceiverExists(ObjectNode jsonRecord, int receiverIndex) {
+        ArrayNode receiverArray = (ArrayNode) jsonRecord.get("receiver");
+        while (receiverArray.size() <= receiverIndex) {
+            receiverArray.addObject();
+        }
+        return (ObjectNode) receiverArray.get(receiverIndex);
+    }
+    
+    private void initializeJsonStructure(ObjectNode jsonRecord) {
+        if (!jsonRecord.has("characteristic")) {
+            jsonRecord.putObject("characteristic");
+        }
+        if (!jsonRecord.has("billingAccount")) {
+            jsonRecord.putObject("billingAccount");
+        }
+        if (!jsonRecord.has("receiver")) {
+            jsonRecord.putArray("receiver");
+        }
+    }
+    
+    // Helper Methods
+    private String extractValueFromJson(JsonNode sourceJson, String jsonPath) {
+        try {
+            if (sourceJson == null || sourceJson.isMissingNode()) {
+                return "";
+            }
+            
+            String[] pathParts = jsonPath.split("/");
+            JsonNode current = sourceJson;
+            
+            for (String part : pathParts) {
+                if (current == null || current.isMissingNode()) {
+                    return "";
+                }
+                current = current.get(part);
+            }
+            
+            return (current == null || current.isMissingNode()) ? "" : current.asText();
+        } catch (Exception e) {
+            log.warn("Failed to extract JSON path '{}': {}", jsonPath, e.getMessage());
+            return "";
+        }
+    }
+    
+    private String getLastPathComponent(String path) {
+        if (path == null || path.isEmpty()) return path;
+        String[] parts = path.split("/");
+        return parts[parts.length - 1];
+    }
+    
+    private JsonNode findNotificationByAccountId(JsonNode sourceJson, String accountId) {
+        if (sourceJson.isArray()) {
+            for (JsonNode node : sourceJson) {
+                JsonNode accountNode = node.get("AccountID");
+                if (accountNode != null && accountId.equals(accountNode.asText())) {
+                    return node;
+                }
+                
+                // Also check in nested structures
+                acco
+
+
+
+
+
+@Service
+@Slf4j
+public class FileProcessingService {
+    
+    @Autowired
+    private FileFormatDelimitedRepository delimitedRepo;
+    
+    @Autowired
+    private FileFormatJsonXmlRepository jsonXmlRepo;
+    
+    private static final String SUCCESS = "SUCCESS";
+    
+    public void processFileWithDatabaseMappings(BatchContext context) throws IOException {
+        var file = context.getFile();
+        var delimiter = context.getBodyFileFormat().getColumnDelimiter();
+        var charset = context.getFileCharset();
+        Long fileFormatId = context.getBodyFileFormat().getId();
+        int firstRowNum = context.getFileConfig().getFirstRowPosition() == null ? 0 : context.getFileConfig().getFirstRowPosition() - 1;
+
+        // Load mappings from database
+        List<FileFormatDelimited> csvMappings = delimitedRepo.findByFileFormatIdOrderByColumnPosition(fileFormatId);
+        List<FileFormatJsonXml> jsonMappings = jsonXmlRepo.findByFileFormatId(fileFormatId);
+        
+        JsonNode sourceJson = clobDecoded();
+        context.setSourceJson(sourceJson);
+
+        List<String> emailRecords = new ArrayList<>();
+        List<Integer> emailLineNumbers = new ArrayList<>();
+        List<String> phoneRecords = new ArrayList<>();
+        List<Integer> phoneLineNumbers = new ArrayList<>();
+        String currentAccountId = null;
+        int lineNumber = 0;
+
+        try (Stream<String> lines = Files.lines(file.toPath(), charset)) {
+            Iterator<String> iterator = lines.iterator();
+
+            while (iterator.hasNext()) {
+                String line = iterator.next();
+                lineNumber++;
+                if (lineNumber <= firstRowNum || line.isBlank()) continue;
+
+                String isValidRecord = validateSingleRecordExecute(context, line, lineNumber);
+                if (!SUCCESS.equals(isValidRecord)) {
+                    saveBatchNotification(context, "EMAIL", line, lineNumber, "FAILED", isValidRecord);
+                    context.incrementRecordsFailed();
+                    continue;
+                }
+                
+                String[] columns = line.split(Pattern.quote(delimiter), -1);
+                final int ACCOUNT_ID_INDEX = 0;
+                final int PREF_TYPE_INDEX = 7;
+
+                String accountId = columns.length > ACCOUNT_ID_INDEX ? columns[ACCOUNT_ID_INDEX].trim() : "";
+                String prefType = columns.length > PREF_TYPE_INDEX ? columns[PREF_TYPE_INDEX].trim().toUpperCase() : "";
+                
+                // If account ID changes, process previous group
+                if (currentAccountId != null && !accountId.equals(currentAccountId)) {
+                    processGroupWithDatabaseMappings(context, emailRecords, emailLineNumbers, 
+                                                   currentAccountId, csvMappings, jsonMappings, "EMAIL");
+                    processGroupWithDatabaseMappings(context, phoneRecords, phoneLineNumbers,
+                                                   currentAccountId, csvMappings, jsonMappings, "SMS");
+                    
+                    emailRecords.clear();
+                    emailLineNumbers.clear();
+                    phoneRecords.clear();
+                    phoneLineNumbers.clear();
+                }
+
+                currentAccountId = accountId;
+
+                if ("EMAIL".equals(prefType)) {
+                    emailRecords.add(line);
+                    emailLineNumbers.add(lineNumber);
+                } else if ("SMS".equals(prefType)) {
+                    phoneRecords.add(line);
+                    phoneLineNumbers.add(lineNumber);
+                }
+            }
+
+            // Process remaining group
+            if (currentAccountId != null) {
+                processGroupWithDatabaseMappings(context, emailRecords, emailLineNumbers, 
+                                               currentAccountId, csvMappings, jsonMappings, "EMAIL");
+                processGroupWithDatabaseMappings(context, phoneRecords, phoneLineNumbers,
+                                               currentAccountId, csvMappings, jsonMappings, "SMS");
+            }
+        } catch (IOException e) {
+            throw new RuntimeException("Error reading file: " + e.getMessage(), e);
+        }
+    }
+    
+    private void processGroupWithDatabaseMappings(BatchContext context, 
+                                                List<String> lines, 
+                                                List<Integer> lineNumbers,
+                                                String accountId,
+                                                List<FileFormatDelimited> csvMappings,
+                                                List<FileFormatJsonXml> jsonMappings,
+                                                String deliveryType) {
+        if (lines.isEmpty()) return;
+        
+        try {
+            ObjectMapper mapper = new ObjectMapper();
+            ObjectNode jsonRecord = mapper.createObjectNode();
+            
+            // Initialize structure
+            initializeJsonStructure(jsonRecord);
+            
+            for (int receiverIndex = 0; receiverIndex < lines.size(); receiverIndex++) {
+                String line = lines.get(receiverIndex);
+                int lineNumber = lineNumbers.get(receiverIndex);
+                String[] columns = line.split(Pattern.quote(context.getBodyFileFormat().getColumnDelimiter()), -1);
+                
+                // Find matching JSON data
+                JsonNode notificationJson = findNotificationByAccountId(context.getSourceJson(), accountId);
+                
+                Map<String, Object> columnMap = new HashMap<>();
+                
+                // Process CSV mappings from database
+                processCsvMappings(columns, csvMappings, columnMap, accountId);
+                
+                // Ensure receiver object exists
+                ObjectNode currentReceiver = ensureReceiverExists(jsonRecord, receiverIndex);
+                
+                // Apply CSV mappings to output JSON
+                applyCsvMappingsToOutput(columns, csvMappings, columnMap, jsonRecord, currentReceiver, receiverIndex);
+                
+                // Apply JSON mappings to output JSON
+                if (notificationJson != null) {
+                    applyJsonMappingsToOutput(notificationJson, jsonMappings, columnMap, jsonRecord, currentReceiver, receiverIndex);
+                }
+            }
+            
+            // Send notification
+            String method = "EMAIL".equalsIgnoreCase(deliveryType) ? "EMAIL" : "SMS";
+            sendNotification(context, method, String.join("\n", lines), lineNumbers.get(0), jsonRecord);
+            
+        } catch (Exception e) {
+            log.error("Error processing grouped lines for AccountID {}: {}", accountId, e.getMessage(), e);
+            context.incrementRecordsFailed();
+        }
+    }
+    
+    private void processCsvMappings(String[] columns, 
+                                   List<FileFormatDelimited> csvMappings,
+                                   Map<String, Object> columnMap,
+                                   String accountId) {
+        for (FileFormatDelimited mapping : csvMappings) {
+            if ("Copy".equalsIgnoreCase(mapping.getColumnAction())) {
+                Integer colIndex = mapping.getColumnPosition() != null ? mapping.getColumnPosition() - 1 : null;
+                String columnKey = mapping.getExternalColumnName();
+                if (colIndex != null && colIndex >= 0 && colIndex < columns.length && 
+                    columnKey != null && !columnKey.isEmpty()) {
+                    String value = columns[colIndex].trim();
+                    columnMap.put(columnKey.toUpperCase(), value);
+                }
+            }
+        }
+        
+        // Add key fields for expression evaluation
+        String freeType = (String) columnMap.getOrDefault("FREE_TYPE", "");
+        String freeValue = (String) columnMap.getOrDefault("FREE_VALUE", "");
+        columnMap.put("FREE_TYPE", freeType);
+        columnMap.put("FREE_VALUE", freeValue);
+        columnMap.put("ACCOUNT_ID", accountId);
+    }
+    
+    private void applyCsvMappingsToOutput(String[] columns,
+                                         List<FileFormatDelimited> csvMappings,
+                                         Map<String, Object> columnMap,
+                                         ObjectNode jsonRecord,
+                                         ObjectNode currentReceiver,
+                                         int receiverIndex) {
+        for (FileFormatDelimited mapping : csvMappings) {
+            String rawValue = "";
+            
+            if ("Copy".equalsIgnoreCase(mapping.getColumnAction())) {
+                Integer colIndex = mapping.getColumnPosition() != null ? mapping.getColumnPosition() - 1 : null;
+                if (colIndex != null && colIndex >= 0 && colIndex < columns.length) {
+                    rawValue = columns[colIndex].trim();
+                }
+            }
+            
+            // Apply expression transformations from database
+            if (mapping.getColumnFormat() != null && mapping.getColumnFormat().contains("{")) {
+                columnMap.put("ELEMENT_VAL", rawValue);
+                rawValue = evaluateExpression(mapping.getColumnFormat(), columnMap);
+            }
+            
+            if (rawValue == null || rawValue.isBlank()) continue;
+            
+            // Set value in appropriate location
+            setValueByPath(jsonRecord, currentReceiver, mapping.getMessageAttribute(), 
+                          rawValue, mapping.getColumnDataType(), receiverIndex);
+        }
+    }
+    
+    private void applyJsonMappingsToOutput(JsonNode notificationJson,
+                                          List<FileFormatJsonXml> jsonMappings,
+                                          Map<String, Object> columnMap,
+                                          ObjectNode jsonRecord,
+                                          ObjectNode currentReceiver,
+                                          int receiverIndex) {
+        for (FileFormatJsonXml mapping : jsonMappings) {
+            String rawValue = "";
+            
+            if ("Json".equalsIgnoreCase(mapping.getColumnAction())) {
+                // Extract value from JSON using external column name as JSON path
+                rawValue = extractValueFromJson(notificationJson, mapping.getExternalColumnName());
+                
+                // Add to columnMap for expression evaluation
+                if (!rawValue.isEmpty()) {
+                    String key = getLastPathComponent(mapping.getExternalColumnName());
+                    columnMap.put(key, rawValue);
+                }
+            }
+            
+            // Apply expression transformations from database
+            if (mapping.getColumnFormat() != null && mapping.getColumnFormat().contains("{")) {
+                columnMap.put("ELEMENT_VAL", rawValue);
+                rawValue = evaluateExpression(mapping.getColumnFormat(), columnMap);
+            }
+            
+            if (rawValue == null || rawValue.isBlank()) continue;
+            
+            // Set value in appropriate location
+            setValueByPath(jsonRecord, currentReceiver, mapping.getMessageAttribute(),
+                          rawValue, mapping.getColumnDataType(), receiverIndex);
+        }
+    }
+    
+    private void setValueByPath(ObjectNode jsonRecord, 
+                               ObjectNode currentReceiver,
+                               String messageAttribute, 
+                               String value, 
+                               String dataType,
+                               int receiverIndex) {
+        JsonNode valueNode = convertToJsonNode(value, dataType);
+        
+        if (messageAttribute.startsWith("receiver[0]/")) {
+            String receiverField = messageAttribute.replace("receiver[0]/", "");
+            setValueInJson(currentReceiver, receiverField, valueNode);
+        } else if (messageAttribute.startsWith("characteristic/")) {
+            String charField = messageAttribute.replace("characteristic/", "");
+            if (jsonRecord.has("characteristic")) {
+                setValueInJson((ObjectNode) jsonRecord.get("characteristic"), charField, valueNode);
+            }
+        } else if (messageAttribute.startsWith("billingAccount/")) {
+            String billingField = messageAttribute.replace("billingAccount/", "");
+            if (jsonRecord.has("billingAccount")) {
+                setValueInJson((ObjectNode) jsonRecord.get("billingAccount"), billingField, valueNode);
+            }
+        } else {
+            setValueInJson(jsonRecord, messageAttribute, valueNode);
+        }
+    }
+    
+    private ObjectNode ensureReceiverExists(ObjectNode jsonRecord, int receiverIndex) {
+        ArrayNode receiverArray = (ArrayNode) jsonRecord.get("receiver");
+        while (receiverArray.size() <= receiverIndex) {
+            receiverArray.addObject();
+        }
+        return (ObjectNode) receiverArray.get(receiverIndex);
+    }
+    
+    private void initializeJsonStructure(ObjectNode jsonRecord) {
+        if (!jsonRecord.has("characteristic")) {
+            jsonRecord.putObject("characteristic");
+        }
+        if (!jsonRecord.has("billingAccount")) {
+            jsonRecord.putObject("billingAccount");
+        }
+        if (!jsonRecord.has("receiver")) {
+            jsonRecord.putArray("receiver");
+        }
+    }
+    
+    // Helper Methods
+    private String extractValueFromJson(JsonNode sourceJson, String jsonPath) {
+        try {
+            if (sourceJson == null || sourceJson.isMissingNode()) {
+                return "";
+            }
+            
+            String[] pathParts = jsonPath.split("/");
+            JsonNode current = sourceJson;
+            
+            for (String part : pathParts) {
+                if (current == null || current.isMissingNode()) {
+                    return "";
+                }
+                current = current.get(part);
+            }
+            
+            return (current == null || current.isMissingNode()) ? "" : current.asText();
+        } catch (Exception e) {
+            log.warn("Failed to extract JSON path '{}': {}", jsonPath, e.getMessage());
+            return "";
+        }
+    }
+    
+    private String getLastPathComponent(String path) {
+        if (path == null || path.isEmpty()) return path;
+        String[] parts = path.split("/");
+        return parts[parts.length - 1];
+    }
+    
+    private JsonNode findNotificationByAccountId(JsonNode sourceJson, String accountId) {
+        if (sourceJson.isArray()) {
+            for (JsonNode node : sourceJson) {
+                JsonNode accountNode = node.get("AccountID");
+                if (accountNode != null && accountId.equals(accountNode.asText())) {
+                    return node;
+                }
+                
+                // Also check in nested structures
+                accountNode = extractValueFromJsonNode(node, "AccountID");
+                if (accountNode != null && accountId.equals(accountNode.asText())) {
+                    return node;
+                }
+            }
+        } else if (sourceJson.isObject()) {
+            JsonNode accountNode = sourceJson.get("AccountID");
+            if (accountNode != null && accountId.equals(accountNode.asText())) {
+                return sourceJson;
+            }
+            
+            // Also check in nested structures
+            accountNode = extractValueFromJsonNode(sourceJson, "AccountID");
+            if (accountNode != null && accountId.equals(accountNode.asText())) {
+                return sourceJson;
+            }
+        }
+        return null;
+    }
+    
+    private JsonNode extractValueFromJsonNode(JsonNode node, String fieldName) {
+        if (node == null) return null;
+        
+        // Check direct field
+        if (node.has(fieldName)) {
+            return node.get(fieldName);
+        }
+        
+        // Search recursively in object
+        if (node.isObject()) {
+            Iterator<String> fieldNames = node.fieldNames();
+            while (fieldNames.hasNext()) {
+                String field = fieldNames.next();
+                JsonNode result = extractValueFromJsonNode(node.get(field), fieldName);
+                if (result != null && !result.isMissingNode()) {
+                    return result;
+                }
+            }
+        }
+        
+        // Search in array
+        if (node.isArray()) {
+            for (JsonNode element : node) {
+                JsonNode result = extractValueFromJsonNode(element, fieldName);
+                if (result != null && !result.isMissingNode()) {
+                    return result;
+                }
+            }
+        }
+        
+        return null;
+    }
+    
+    private String evaluateExpression(String expression, Map<String, Object> columnMap) {
+        if (expression == null) return "";
+        
+        String freeType = (String) columnMap.getOrDefault("FREE_TYPE", "");
+        String freeValue = (String) columnMap.getOrDefault("FREE_VALUE", "");
+        String language = (String) columnMap.getOrDefault("Language", "");
+        
+        // Handle {FREE_TYPE?.toLowerCase()}
+        if (expression.contains("{FREE_TYPE?.toLowerCase()}")) {
+            return freeType != null ? freeType.toLowerCase() : "";
+        }
+        
+        // Handle {Language?.toLowerCase()}
+        if (expression.contains("{Language?.toLowerCase()}")) {
+            return language != null ? language.toLowerCase() : "";
+        }
+        
+        // Handle {FREE_TYPE == 'EMAIL' ? FREE_VALUE : ''}
+        if (expression.contains("{FREE_TYPE == 'EMAIL' ? FREE_VALUE : ''}")) {
+            return "EMAIL".equalsIgnoreCase(freeType) ? freeValue : "";
+        }
+        
+        // Handle {FREE_TYPE == 'SMS' ? FREE_VALUE : ''}
+        if (expression.contains("{FREE_TYPE == 'SMS' ? FREE_VALUE : ''}")) {
+            return "SMS".equalsIgnoreCase(freeType) ? freeValue : "";
+        }
+        
+        return expression;
+    }
+    
+    private JsonNode convertToJsonNode(String value, String dataType) {
+        if (value == null) return NullNode.getInstance();
+        
+        try {
+            if (dataType != null) {
+                switch (dataType.toLowerCase()) {
+                    case "number":
+                    case "integer":
+                        return new IntNode(Integer.parseInt(value));
+                    case "boolean":
+                        return BooleanNode.valueOf(Boolean.parseBoolean(value));
+                    case "array":
+                        return new ObjectMapper().readTree(value);
+                    default:
+                        return new TextNode(value);
+                }
+            }
+            return new TextNode(value);
+        } catch (Exception e) {
+            return new TextNode(value);
+        }
+    }
+    
+    private void setValueInJson(ObjectNode node, String path, JsonNode value) {
+        try {
+            String[] parts = path.split("/");
+            ObjectNode current = node;
+            
+            for (int i = 0; i < parts.length - 1; i++) {
+                String part = parts[i];
+                if (!current.has(part)) {
+                    current.putObject(part);
+                }
+                JsonNode nextNode = current.get(part);
+                if (nextNode.isObject()) {
+                    current = (ObjectNode) nextNode;
+                } else {
+                    // If it's not an object, replace with object
+                    current.putObject(part);
+                    current = (ObjectNode) current.get(part);
+                }
+            }
+            
+            current.set(parts[parts.length - 1], value);
+        } catch (Exception e) {
+            log.error("Error setting value in JSON at path {}: {}", path, e.getMessage());
+        }
+    }
+
+-- Clear existing mappings for FILE_FORMAT_ID = 4
+DELETE FROM EMSC_FILE_FORMAT_DELIMITED WHERE FILE_FORMAT_ID = 4;
+DELETE FROM EMSC_FILE_FORMAT_JSON_XML WHERE FILE_FORMAT_ID = 4;
+
+-- Insert CSV/Delimited Mappings
+INSERT INTO EMSC_FILE_FORMAT_DELIMITED (FILE_FORMAT_ID, EXTERNAL_COLUMN_NAME, COLUMN_POSITION, COLUMN_FORMAT, COLUMN_DATA_TYPE, MESSAGE_ATTRIBUTE, COLUMN_ACTION) VALUES 
+(4, 'ACCOUNT_NUMBER', 1, NULL, 'String', 'billingAccount/id', 'Copy'),
+(4, 'NOTIFY_ID', 2, NULL, 'String', 'characteristic/NotificationId', 'Copy'),
+(4, 'ROLE_NAME', 3, NULL, 'String', 'roleName', 'Copy'),
+(4, 'TYPE', 4, NULL, 'String', 'type', 'Copy'),
+(4, 'SUBTYPE', 5, NULL, 'String', 'subType', 'Copy'),
+(4, 'STATUS', 6, NULL, 'String', 'fastatus', 'Copy'),
+(4, 'NOTE_TYPE', 7, NULL, 'String', 'NotificationType', 'Copy'),
+(4, 'FREE_TYPE', 8, '{FREE_TYPE?.toLowerCase()}', 'String', 'messageType', 'Copy'),
+(4, 'FREE_VALUE', 9, '{FREE_TYPE == ''EMAIL'' ? FREE_VALUE : ''''}', 'String', 'receiver[0]/email', 'Copy'),
+(4, 'FREE_VALUE', 9, '{FREE_TYPE == ''SMS'' ? FREE_VALUE : ''''}', 'String', 'receiver[0]/phoneNumber', 'Copy'),
+(4, 'TIMEZONE', 10, NULL, 'String', 'timeZone', 'Copy'),
+(4, 'PROVINCE', 11, NULL, 'String', 'receiver[0]/province', 'Copy');
+
+-- Insert JSON Mappings
+INSERT INTO EMSC_FILE_FORMAT_JSON_XML (FILE_FORMAT_ID, EXTERNAL_COLUMN_NAME, COLUMN_FORMAT, COLUMN_DATA_TYPE, MESSAGE_ATTRIBUTE, COLUMN_ACTION) VALUES
+(4, 'ReportField1', NULL, 'String', 'characteristic/ReportField1', 'Json'),
+(4, 'ReportField2', NULL, 'String', 'characteristic/ReportField2', 'Json'),
+(4, 'RequestID', NULL, 'String', 'characteristic/RequestID', 'Json'),
+(4, 'Category', NULL, 'String', 'contentCategory', 'Json'),
+(4, 'Language', '{Language?.toLowerCase()}', 'String', 'contentLanguage', 'Json'),
+(4, 'Address/PostalAddress/Addr1', NULL, 'String', 'receiver[0]/addr1', 'Json'),
+(4, 'Address/PostalAddress/Addr2', NULL, 'String', 'receiver[0]/addr2', 'Json'),
+(4, 'Address/PostalAddress/Country', NULL, 'String', 'receiver[0]/country', 'Json'),
+(4, 'Contact/Firstname', NULL, 'String', 'receiver[0]/firstName', 'Json'),
+(4, 'Contact/Lastname', NULL, 'String', 'receiver[0]/lastName', 'Json'),
+(4, 'Address/PhoneNumber', NULL, 'String', 'receiver[0]/phoneNumber', 'Json'),
+(4, 'Address/PostalAddress/PostalCode', NULL, 'String', 'receiver[0]/postalCode', 'Json'),
+(4, 'Address/PostalAddress/StateProv', NULL, 'String', 'receiver[0]/stateProv', 'Json');
+    
+    // Placeholder methods - implement based on your actual requirements
+    private String validateSingleRe
