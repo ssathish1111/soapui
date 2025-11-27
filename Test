@@ -1,0 +1,55 @@
+@Component
+public class NotificationProcessCoordinator {
+    private static final ConcurrentHashMap<Long, ProcessLock> processLocks = new ConcurrentHashMap<>();
+    
+    private static class ProcessLock {
+        private final String directoryPath;
+        private final AtomicInteger usageCount = new AtomicInteger(0);
+        
+        public ProcessLock(String directoryPath) {
+            this.directoryPath = directoryPath;
+        }
+    }
+    
+    public String acquireProcessLock(Long notificationId) throws IOException {
+        synchronized(processLocks) {
+            ProcessLock lock = processLocks.computeIfAbsent(notificationId, id -> {
+                try {
+                    String uniqueId = UUID.randomUUID().toString().substring(0, 8);
+                    String directoryPath = "tmp/tempResources_" + notificationId + "_" + uniqueId;
+                    Files.createDirectories(Paths.get(directoryPath));
+                    return new ProcessLock(directoryPath);
+                } catch (IOException e) {
+                    throw new RuntimeException("Failed to create directory", e);
+                }
+            });
+            lock.usageCount.incrementAndGet();
+            return lock.directoryPath;
+        }
+    }
+    
+    public void releaseProcessLock(Long notificationId) {
+        synchronized(processLocks) {
+            ProcessLock lock = processLocks.get(notificationId);
+            if (lock != null && lock.usageCount.decrementAndGet() <= 0) {
+                // Cleanup directory when no longer needed
+                cleanupDirectory(lock.directoryPath);
+                processLocks.remove(notificationId);
+            }
+        }
+    }
+    
+    private void cleanupDirectory(String directoryPath) {
+        try {
+            Path path = Paths.get(directoryPath);
+            Files.walk(path)
+                .sorted((a, b) -> -a.compareTo(b))
+                .forEach(p -> {
+                    try { Files.deleteIfExists(p); } 
+                    catch (IOException e) { /* Ignore */ }
+                });
+        } catch (IOException e) {
+            log.warn("Failed to cleanup directory: {}", directoryPath, e);
+        }
+    }
+}
