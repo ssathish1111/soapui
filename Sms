@@ -1,0 +1,321 @@
+Looking at the code, I can see you have an SMS sending system that currently processes phone numbers one at a time. Here's an updated version that supports sending SMS to multiple phone numbers in bulk:
+
+Updated SmacClient.java:
+
+```java
+public class SmacClient {
+
+    private final ResilientClient resilientClient;
+    private final SmppMessageSender smppMessageSender;
+
+    @Autowired
+    public SmacClient(ResilientClient resilientClient, SmppMessageSender smppMessageSender) {
+        this.resilientClient = resilientClient;
+        this.smppMessageSender = smppMessageSender;
+    }
+
+    // Original single number method (keep for backward compatibility)
+    public SmppSendResult sendSmsWithCircuitBreaker(NotificationContext notificationContext, String phoneNumber, String shortCode) {
+        try {
+            return resilientClient.executeWithCB(notificationContext, SMSC_SERVICE,
+                () -> smppMessageSender.sendSms(notificationContext, phoneNumber, shortCode));
+        } catch (Exception e) {
+            log.error("Error sending SMS via SMSC for phone number: {}: {}", phoneNumber, e.getMessage());
+            throw e;
+        }
+    }
+
+    // NEW: Bulk SMS sending method
+    public List<SmppSendResult> sendBulkSmsWithCircuitBreaker(NotificationContext notificationContext, List<String> phoneNumbers, String shortCode) {
+        try {
+            return resilientClient.executeWithCB(notificationContext, SMSC_SERVICE,
+                () -> smppMessageSender.sendBulkSms(notificationContext, phoneNumbers, shortCode));
+        } catch (Exception e) {
+            log.error("Error sending bulk SMS via SMSC for {} phone numbers: {}", phoneNumbers.size(), e.getMessage());
+            throw e;
+        }
+    }
+
+    // NEW: Bulk SMS with different short codes per number
+    public List<SmppSendResult> sendBulkSmsWithCircuitBreaker(NotificationContext notificationContext, Map<String, String> phoneNumberToShortCode) {
+        try {
+            return resilientClient.executeWithCB(notificationContext, SMSC_SERVICE,
+                () -> smppMessageSender.sendBulkSms(notificationContext, phoneNumberToShortCode));
+        } catch (Exception e) {
+            log.error("Error sending bulk SMS via SMSC for {} phone numbers: {}", phoneNumberToShortCode.size(), e.getMessage());
+            throw e;
+        }
+    }
+}
+```
+
+Updated SmppMessageSender.java:
+
+```java
+public class SmppMessageSender {
+    private final SshTunnelManager tunnelManager;
+    private final SmppPoolGroup poolGroup;
+    private final SmppConfigParameters config;
+
+    public SmppMessageSender(SmppConfigParameters config) throws Exception {
+        this.config = config;
+        this.tunnelManager = new SshTunnelManager(config);
+        this.tunnelManager.open();
+
+        List<SmppConnectionPool> pools = new ArrayList<>();
+        for (SmppServerConfig server : config.getServers()) {
+            SmppSessionConfiguration smppCfg = buildSessionConfig(server, config);
+            SmppConnectionPool.PoolFactory factory = () -> 
+                new SmppConnection(smppCfg, config.getSmppDeliverSmCallback());
+            pools.add(new SmppConnectionPool(factory, config.getPoolSize(), server.getName()));
+        }
+        this.poolGroup = new SmppPoolGroup(pools);
+    }
+
+    // Keep original single message method
+    public SmppSendResult sendSms(NotificationContext ctx, String phoneNumber, String shortCode) {
+        return sendBulkSms(ctx, Collections.singletonList(phoneNumber), 
+                          Collections.singletonMap(phoneNumber, shortCode)).get(0);
+    }
+
+    // NEW: Bulk SMS sending to multiple phone numbers with same short code
+    public List<SmppSendResult> sendBulkSms(NotificationContext ctx, List<String> phoneNumbers, String shortCode) {
+        Map<String, String> phoneToShortCode = new HashMap<>();
+        for (String phoneNumber : phoneNumbers) {
+            phoneToShortCode.put(phoneNumber, shortCode);
+        }
+        return sendBulkSms(ctx, phoneNumbers, phoneToShortCode);
+    }
+
+    // NEW: Bulk SMS sending with different short codes per number
+    public List<SmppSendResult> sendBulkSms(NotificationContext ctx, List<String> phoneNumbers, Map<String, String> phoneNumberToShortCode) {
+        if (config.isSmppHealthCheckEnabled()) {
+            throw new IllegalStateException("SMPP Health Check is disabled. Cannot send SMS.");
+        }
+
+        SmppSendResult tunnelResult = ensureTunnelUp();
+        if (tunnelResult != null) {
+            // Return failure for all phone numbers if tunnel is down
+            return phoneNumbers.stream()
+                .map(phone -> new SmppSendResult(false, null, tunnelResult.getError(), "SSH Tunnel Failed"))
+                .collect(Collectors.toList());
+        }
+
+        int[] order = poolGroup.poolAttemptOrder();
+        List<SmppSendResult> results = new ArrayList<>();
+        Map<String, Exception> failedNumbers = new HashMap<>();
+
+        for (int idx : order) {
+            SmppConnectionPool pool = poolGroup.get(idx);
+            SmppConnection conn = null;
+            
+            try {
+                conn = pool.borrow(1000);
+                
+                // Send messages for all phone numbers with this connection
+                for (String phoneNumber : phoneNumbers) {
+                    if (results.size() > phoneNumbers.indexOf(phoneNumber) && 
+                        results.get(phoneNumbers.indexOf(phoneNumber)).isSuccess()) {
+                        continue; // Skip already successful sends
+                    }
+
+                    String shortCode = phoneNumberToShortCode.get(phoneNumber);
+                    try {
+                        SubmitSm submit = buildSubmitSm(ctx, phoneNumber, shortCode);
+                        var resp = conn.send(submit, config.getSmppSubmitTimeoutMs(), tunnelManager);
+                        
+                        SmppSendResult result = new SmppSendResult(true, resp, null, pool.serverName);
+                        if (results.size() <= phoneNumbers.indexOf(phoneNumber)) {
+                            results.add(result);
+                        } else {
+                            results.set(phoneNumbers.indexOf(phoneNumber), result);
+                        }
+                    } catch (Exception ex) {
+                        failedNumbers.put(phoneNumber, ex);
+                        log.error("Failed to send to phone number {} with server {}: {}", 
+                                 phoneNumber, pool.serverName, ex.getMessage());
+                    }
+                }
+
+                // Check if all messages were sent successfully
+                if (results.stream().allMatch(SmppSendResult::isSuccess)) {
+                    return results;
+                }
+
+            } catch (Exception ex) {
+                log.error("Failed to borrow connection from server {}: {}", pool.serverName, ex.getMessage());
+            } finally {
+                if (conn != null) {
+                    pool.release(conn, tunnelManager);
+                }
+            }
+        }
+
+        // Handle any remaining failures
+        for (String phoneNumber : phoneNumbers) {
+            int index = phoneNumbers.indexOf(phoneNumber);
+            if (index >= results.size() || !results.get(index).isSuccess()) {
+                Exception error = failedNumbers.getOrDefault(phoneNumber, 
+                    new Exception("All pools failed for phone number: " + phoneNumber));
+                SmppSendResult failure = new SmppSendResult(false, null, error, "All pools failed");
+                
+                if (index >= results.size()) {
+                    results.add(failure);
+                } else {
+                    results.set(index, failure);
+                }
+            }
+        }
+
+        return results;
+    }
+
+    // NEW: Batch processing for large numbers of recipients
+    public List<SmppSendResult> sendBulkSmsInBatches(NotificationContext ctx, List<String> phoneNumbers, 
+                                                    String shortCode, int batchSize) {
+        List<SmppSendResult> allResults = new ArrayList<>();
+        
+        for (int i = 0; i < phoneNumbers.size(); i += batchSize) {
+            int end = Math.min(phoneNumbers.size(), i + batchSize);
+            List<String> batch = phoneNumbers.subList(i, end);
+            
+            log.info("Processing batch {}/{} ({} numbers)", 
+                    (i/batchSize) + 1, 
+                    (int) Math.ceil((double) phoneNumbers.size() / batchSize),
+                    batch.size());
+            
+            List<SmppSendResult> batchResults = sendBulkSms(ctx, batch, shortCode);
+            allResults.addAll(batchResults);
+            
+            // Optional: Add delay between batches to avoid overwhelming the SMSC
+            if (i + batchSize < phoneNumbers.size() && config.getBatchDelayMs() > 0) {
+                try {
+                    Thread.sleep(config.getBatchDelayMs());
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                }
+            }
+        }
+        
+        return allResults;
+    }
+
+    private static SubmitSm buildSubmitSm(NotificationContext notificationContext, 
+                                         String phoneNumber, String shortCode) throws SmppInvalidArgumentException {
+        log.debug("Building SubmitSm for phone number: {}, short code: {}", phoneNumber, shortCode);
+        SubmitSm submit = new SubmitSm();
+        
+        submit.setSourceAddress(new Address(TypeOfNumber.INTERNATIONAL.value(), 
+                                           NumberingPlanIndicator.ISDN.value(), shortCode));
+        submit.setDestAddress(new Address(TypeOfNumber.INTERNATIONAL.value(), 
+                                         NumberingPlanIndicator.ISDN.value(), phoneNumber));
+        submit.setRegisteredDelivery(SmppConstants.REGISTERED_DELIVERY_SMSC_RECEIPT_NOT_REQUESTED);
+        
+        var message = notificationContext.getRenderedMessage();
+        byte[] messageBytes = message.getBytes();
+        
+        if (messageBytes.length <= 255) {
+            submit.setShortMessage(messageBytes);
+        } else {
+            submit.setShortMessage(new byte[0]);
+            submit.addOptionalParameter(new Tlv(SmppConstants.TAG_MESSAGE_PAYLOAD, messageBytes));
+        }
+        
+        submit.setDataCoding(message.getDataCoding());
+        return submit;
+    }
+
+    private SmppSendResult ensureTunnelUp() {
+        try {
+            tunnelManager.ensureUp();
+        } catch (Exception e) {
+            log.error("Could not ensure SSH tunnel is up", e);
+            return new SmppSendResult(false, null, e, "SSH Tunnel could not be established");
+        }
+        return null;
+    }
+
+    @PreDestroy
+    public void shutdown() {
+        poolGroup.shutdown();
+        tunnelManager.close();
+    }
+}
+```
+
+Updated doProcess method:
+
+```java
+@Override
+public void doProcess(NotificationContext notificationContext) throws Exception {
+    var targetSystemMap = notificationContext.getTargetSystemMap();
+    List<String> sentSystemByPhoneNumber = new ArrayList<>();
+    List<String> phoneNumberList = notificationContext.getNotificationDto().getPhoneNumberList();
+    
+    // Group phone numbers by target system and short code
+    Map<String, List<String>> shortCodeToPhoneNumbers = new HashMap<>();
+    Map<String, String> phoneToShortCode = new HashMap<>();
+    
+    for (String phoneNumber : phoneNumberList) {
+        var shortCodeEntry = targetSystemMap.get(phoneNumber);
+        String shortCode = shortCodeEntry.getShortCode();
+        TargetSystem targetSystem = shortCodeEntry.getTargetSystem();
+        
+        if (targetSystem == TargetSystem.SMSC) {
+            phoneToShortCode.put(phoneNumber, shortCode);
+            shortCodeToPhoneNumbers.computeIfAbsent(shortCode, k -> new ArrayList<>()).add(phoneNumber);
+        }
+    }
+    
+    // Send SMS in batches per short code
+    for (Map.Entry<String, List<String>> entry : shortCodeToPhoneNumbers.entrySet()) {
+        String shortCode = entry.getKey();
+        List<String> numbersForShortCode = entry.getValue();
+        
+        log.info("Processing {} SMS for short code: {}", numbersForShortCode.size(), shortCode);
+        
+        // Send in bulk
+        List<SmppSendResult> results = smscClient.sendBulkSmsWithCircuitBreaker(
+            notificationContext, numbersForShortCode, shortCode);
+        
+        // Process results
+        for (int i = 0; i < numbersForShortCode.size(); i++) {
+            String phoneNumber = numbersForShortCode.get(i);
+            SmppSendResult result = results.get(i);
+            
+            if (result.isSuccess()) {
+                log.info("SMS sent via SMSC server: {} for phone: {}", 
+                        result.getAttemptedServer(), phoneNumber);
+                sentSystemByPhoneNumber.add("Routed via " + TargetSystem.SMSC.name() + 
+                                           "-" + result.getAttemptedServer());
+            } else {
+                log.error("Failed to send SMS via SMSC for phone: {}, error: {}", 
+                         phoneNumber, result.getError().getMessage());
+                // Option 1: Throw exception for first failure
+                // throw new CustomException("Failed to send SMS via SMSC server: " + 
+                //     result.getAttemptedServer() + " : " + result.getError().getMessage(),
+                //     result.getError(), notificationContext.getCurrentDate());
+                
+                // Option 2: Continue with other numbers (more fault-tolerant)
+                sentSystemByPhoneNumber.add("Failed for " + phoneNumber + ": " + 
+                                           result.getError().getMessage());
+            }
+        }
+    }
+    
+    // Store results in context if needed
+    notificationContext.setSentSystemByPhoneNumber(sentSystemByPhoneNumber);
+}
+```
+
+Key Improvements:
+
+1. Bulk Processing: Added methods to send SMS to multiple phone numbers in one call
+2. Batch Support: Added sendBulkSmsInBatches for handling large recipient lists
+3. Connection Reuse: Reuses the same SMPP connection for multiple messages
+4. Result Tracking: Returns individual results for each phone number
+5. Fault Tolerance: Can continue sending even if some numbers fail
+6. Performance: Reduces overhead compared to sending one-by-one
+7. Flexibility: Supports both same short code and different short codes per number
+
+This implementation will significantly improve performance when sending to multiple recipients while maintaining backward compatibility with the existing single-recipient API.
