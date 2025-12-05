@@ -1,0 +1,494 @@
+Since you want to continue with Cloudhopper + Custom TLVs for single-request batch sending, here's the complete implementation. I'll include testing and fallback mechanisms:
+
+Complete Cloudhopper + Custom TLVs Implementation:
+
+```java
+package com.rogers.ens.sms.sender;
+
+import com.cloudhopper.smpp.SmppSession;
+import com.cloudhopper.smpp.pdu.SubmitSm;
+import com.cloudhopper.smpp.pdu.SubmitSmResp;
+import com.cloudhopper.smpp.type.Address;
+import com.cloudhopper.smpp.tlv.Tlv;
+import com.cloudhopper.smpp.SmppConstants;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.stereotype.Component;
+
+import java.nio.ByteBuffer;
+import java.nio.charset.StandardCharsets;
+import java.util.*;
+
+@Component
+public class CloudhopperBatchSender {
+    
+    private static final Logger log = LoggerFactory.getLogger(CloudhopperBatchSender.class);
+    
+    // SMSC-SPECIFIC CONFIGURATION - GET THESE FROM YOUR SMSC PROVIDER
+    @Value("${smpp.batch.tlv.tag:0x1400}")  // Default example - CHANGE THIS
+    private int batchTlvTag;
+    
+    @Value("${smpp.batch.encoding:COMMA}")  // COMMA, PIPE, BINARY
+    private String batchEncoding;
+    
+    @Value("${smpp.batch.max.size:100}")
+    private int maxBatchSize;
+    
+    @Value("${smpp.batch.enabled:false}")
+    private boolean batchEnabled;
+    
+    /**
+     * Send SMS to multiple recipients in a SINGLE SMPP request using custom TLVs
+     */
+    public List<SmppSendResult> sendSingleRequestBatch(List<String> phoneNumbers,
+                                                      NotificationContext notificationContext,
+                                                      String shortCode) {
+        
+        List<SmppSendResult> results = new ArrayList<>();
+        
+        // 1. Validate batch is enabled and size is within limits
+        if (!batchEnabled || phoneNumbers.isEmpty()) {
+            return sendIndividualFallback(phoneNumbers, notificationContext, shortCode);
+        }
+        
+        if (phoneNumbers.size() > maxBatchSize) {
+            log.warn("Batch size {} exceeds max {}. Splitting...", 
+                    phoneNumbers.size(), maxBatchSize);
+            return sendBatchesInChunks(phoneNumbers, notificationContext, shortCode);
+        }
+        
+        int[] order = poolGroup.poolAttemptOrder();
+        
+        for (int idx : order) {
+            SmppConnectionPool pool = poolGroup.get(idx);
+            SmppConnection conn = null;
+            
+            try {
+                conn = pool.borrow(1000);
+                
+                // 2. Create SINGLE SubmitSm request
+                SubmitSm batchRequest = createBatchSubmitSm(notificationContext, shortCode, phoneNumbers);
+                
+                // 3. Send SINGLE request
+                SubmitSmResp resp = conn.send(batchRequest, config.getSmppSubmitTimeoutMs(), tunnelManager);
+                
+                // 4. Process the single response
+                return processBatchResponse(resp, phoneNumbers, pool.serverName);
+                
+            } catch (Exception ex) {
+                log.error("Failed batch via server {}: {}", pool.serverName, ex.getMessage());
+                
+                // Try next server
+                continue;
+            } finally {
+                if (conn != null) {
+                    pool.returnObject(conn);
+                }
+            }
+        }
+        
+        // If all servers failed, fallback to individual
+        log.warn("All batch attempts failed, falling back to individual sends");
+        return sendIndividualFallback(phoneNumbers, notificationContext, shortCode);
+    }
+    
+    /**
+     * Create a single SubmitSm with all recipients in custom TLV
+     */
+    private SubmitSm createBatchSubmitSm(NotificationContext context, 
+                                        String shortCode, 
+                                        List<String> phoneNumbers) {
+        
+        // 1. Build base message
+        SubmitSm submit = buildSubmitSm(context, shortCode);
+        
+        // 2. Set message content
+        var message = context.getRenderingResponse();
+        byte[] messageBytes = message.getBytes();
+        
+        if (messageBytes.length <= 255) {
+            submit.setShortMessage(messageBytes);
+        } else {
+            submit.setShortMessage(new byte[0]);
+            submit.addOptionalParameter(new Tlv(
+                SmppConstants.TAG_MESSAGE_PAYLOAD, 
+                messageBytes
+            ));
+        }
+        submit.setDataCoding((byte) message.getDataCoding());
+        
+        // 3. Set source address
+        submit.setSourceAddress(new Address(
+            TypeOfNumber.INTERNATIONAL.value(),
+            NumberingPlanIndicator.ISDN.value(),
+            shortCode
+        ));
+        
+        // 4. Set PRIMARY destination (required by SMPP)
+        submit.setDestAddress(new Address(
+            TypeOfNumber.INTERNATIONAL.value(),
+            NumberingPlanIndicator.ISDN.value(),
+            phoneNumbers.get(0)  // First number as primary
+        ));
+        
+        // 5. Add ALL recipients via custom TLV
+        byte[] encodedRecipients = encodeRecipientsForBatch(phoneNumbers);
+        Tlv batchTlv = new Tlv((short) batchTlvTag, encodedRecipients);
+        submit.addOptionalParameter(batchTlv);
+        
+        // 6. Optional: Add batch metadata
+        addBatchMetadata(submit, phoneNumbers.size());
+        
+        log.debug("Created batch request for {} recipients with TLV 0x{}", 
+                phoneNumbers.size(), Integer.toHexString(batchTlvTag));
+        
+        return submit;
+    }
+    
+    /**
+     * Encode recipients based on configured encoding format
+     */
+    private byte[] encodeRecipientsForBatch(List<String> phoneNumbers) {
+        switch (batchEncoding.toUpperCase()) {
+            case "COMMA":
+                return encodeCommaSeparated(phoneNumbers);
+            case "PIPE":
+                return encodePipeSeparated(phoneNumbers);
+            case "BINARY":
+                return encodeBinary(phoneNumbers);
+            case "SEMICOLON":
+                return encodeSemicolonSeparated(phoneNumbers);
+            default:
+                log.warn("Unknown encoding {}, using COMMA", batchEncoding);
+                return encodeCommaSeparated(phoneNumbers);
+        }
+    }
+    
+    private byte[] encodeCommaSeparated(List<String> phoneNumbers) {
+        StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < phoneNumbers.size(); i++) {
+            if (i > 0) sb.append(",");
+            sb.append(phoneNumbers.get(i));
+        }
+        return sb.toString().getBytes(StandardCharsets.UTF_8);
+    }
+    
+    private byte[] encodePipeSeparated(List<String> phoneNumbers) {
+        StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < phoneNumbers.size(); i++) {
+            if (i > 0) sb.append("|");
+            sb.append(phoneNumbers.get(i));
+        }
+        return sb.toString().getBytes(StandardCharsets.UTF_8);
+    }
+    
+    private byte[] encodeSemicolonSeparated(List<String> phoneNumbers) {
+        StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < phoneNumbers.size(); i++) {
+            if (i > 0) sb.append(";");
+            sb.append(phoneNumbers.get(i));
+        }
+        return sb.toString().getBytes(StandardCharsets.UTF_8);
+    }
+    
+    private byte[] encodeBinary(List<String> phoneNumbers) {
+        // Binary format: [count:1 byte][length1:1 byte][num1...][length2:1 byte][num2...]
+        List<byte[]> encodedNumbers = new ArrayList<>();
+        int totalSize = 1; // For count byte
+        
+        for (String number : phoneNumbers) {
+            byte[] numberBytes = number.getBytes(StandardCharsets.US_ASCII);
+            encodedNumbers.add(numberBytes);
+            totalSize += 1 + numberBytes.length; // Length byte + number bytes
+        }
+        
+        ByteBuffer buffer = ByteBuffer.allocate(totalSize);
+        buffer.put((byte) phoneNumbers.size()); // Count
+        
+        for (byte[] numberBytes : encodedNumbers) {
+            buffer.put((byte) numberBytes.length); // Length
+            buffer.put(numberBytes); // Number
+        }
+        
+        return buffer.array();
+    }
+    
+    /**
+     * Add batch metadata TLVs
+     */
+    private void addBatchMetadata(SubmitSm submit, int batchSize) {
+        // Optional: Add batch ID for tracking
+        String batchId = "BATCH_" + System.currentTimeMillis() + "_" + UUID.randomUUID().toString().substring(0, 8);
+        submit.addOptionalParameter(new Tlv((short) 0x1401, batchId.getBytes(StandardCharsets.UTF_8)));
+        
+        // Optional: Add batch size
+        ByteBuffer sizeBuffer = ByteBuffer.allocate(4);
+        sizeBuffer.putInt(batchSize);
+        submit.addOptionalParameter(new Tlv((short) 0x1402, sizeBuffer.array()));
+        
+        // Optional: Add timestamp
+        String timestamp = String.valueOf(System.currentTimeMillis());
+        submit.addOptionalParameter(new Tlv((short) 0x1403, timestamp.getBytes(StandardCharsets.UTF_8)));
+    }
+    
+    /**
+     * Process batch response and create results for all recipients
+     */
+    private List<SmppSendResult> processBatchResponse(SubmitSmResp resp, 
+                                                     List<String> phoneNumbers,
+                                                     String serverName) {
+        
+        List<SmppSendResult> results = new ArrayList<>();
+        
+        if (resp != null && resp.getCommandStatus() == 0) {
+            // SUCCESS: All recipients received the message
+            String batchMessageId = resp.getMessageId();
+            
+            for (String phoneNumber : phoneNumbers) {
+                results.add(new SmppSendResult(
+                    true,
+                    batchMessageId,
+                    null,
+                    serverName,
+                    phoneNumber,
+                    "BATCH_SUCCESS"
+                ));
+            }
+            
+            log.info("Batch successful: {} recipients, messageId: {}", 
+                    phoneNumbers.size(), batchMessageId);
+            
+        } else {
+            // FAILURE: Batch rejected
+            String errorMsg = resp != null ? 
+                "SMSC Error " + resp.getCommandStatus() + ": " + resp.getResultMessage() :
+                "Null response";
+            
+            Exception batchError = new Exception("Batch failed: " + errorMsg);
+            
+            for (String phoneNumber : phoneNumbers) {
+                results.add(new SmppSendResult(
+                    false,
+                    null,
+                    batchError,
+                    serverName,
+                    phoneNumber,
+                    "BATCH_FAILED"
+                ));
+            }
+            
+            log.error("Batch failed for {} recipients: {}", phoneNumbers.size(), errorMsg);
+        }
+        
+        return results;
+    }
+    
+    /**
+     * Fallback: Send individually if batch fails
+     */
+    private List<SmppSendResult> sendIndividualFallback(List<String> phoneNumbers,
+                                                       NotificationContext context,
+                                                       String shortCode) {
+        
+        List<SmppSendResult> results = new ArrayList<>();
+        
+        // Use your existing individual sending logic
+        for (String phoneNumber : phoneNumbers) {
+            SmppSendResult result = sendIndividualSms(phoneNumber, context, shortCode);
+            results.add(result);
+        }
+        
+        log.info("Used individual fallback for {} recipients", phoneNumbers.size());
+        return results;
+    }
+    
+    /**
+     * Split large batches and send as multiple batch requests
+     */
+    private List<SmppSendResult> sendBatchesInChunks(List<String> phoneNumbers,
+                                                    NotificationContext context,
+                                                    String shortCode) {
+        
+        List<SmppSendResult> allResults = new ArrayList<>();
+        
+        // Split into chunks of maxBatchSize
+        for (int i = 0; i < phoneNumbers.size(); i += maxBatchSize) {
+            int end = Math.min(i + maxBatchSize, phoneNumbers.size());
+            List<String> chunk = phoneNumbers.subList(i, end);
+            
+            List<SmppSendResult> chunkResults = sendSingleRequestBatch(chunk, context, shortCode);
+            allResults.addAll(chunkResults);
+            
+            // Optional: Small delay between chunks
+            if (end < phoneNumbers.size()) {
+                try {
+                    Thread.sleep(100);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                }
+            }
+        }
+        
+        return allResults;
+    }
+    
+    /**
+     * Test batch functionality with SMSC
+     */
+    public boolean testBatchSupport() {
+        log.info("Testing SMSC batch support with TLV 0x{}", Integer.toHexString(batchTlvTag));
+        
+        List<String> testNumbers = Arrays.asList("1234567890", "0987654321");
+        
+        try {
+            // Create test batch
+            SubmitSm testSubmit = new SubmitSm();
+            testSubmit.setSourceAddress(new Address((byte)5, (byte)0, "TEST"));
+            testSubmit.setDestAddress(new Address((byte)1, (byte)1, testNumbers.get(0)));
+            testSubmit.setShortMessage("Test batch message".getBytes());
+            
+            // Add batch TLV
+            byte[] testRecipients = encodeRecipientsForBatch(testNumbers);
+            testSubmit.addOptionalParameter(new Tlv((short) batchTlvTag, testRecipients));
+            
+            // Send test
+            SmppConnection conn = poolGroup.get(0).borrow(1000);
+            SubmitSmResp resp = conn.send(testSubmit, 5000, null);
+            poolGroup.get(0).returnObject(conn);
+            
+            boolean supported = resp.getCommandStatus() == 0;
+            log.info("Batch test result: {}", supported ? "SUPPORTED" : "NOT SUPPORTED");
+            
+            return supported;
+            
+        } catch (Exception e) {
+            log.error("Batch test failed: {}", e.getMessage());
+            return false;
+        }
+    }
+    
+    /**
+     * Discover SMSC batch TLV tag
+     */
+    public Optional<Integer> discoverBatchTlvTag() {
+        log.info("Attempting to discover SMSC batch TLV tag...");
+        
+        // Common TLV tags used by various SMSCs
+        int[] commonTags = {0x1400, 0x1401, 0x1402, 0x1403, 0x1404, 0x1405, 
+                          0x0424, 0x0425, 0x0426, 0x0427, 0x0428};
+        
+        List<String> testNumbers = Arrays.asList("1234567890", "2345678901");
+        
+        for (int tag : commonTags) {
+            try {
+                log.debug("Testing TLV 0x{}", Integer.toHexString(tag));
+                
+                SubmitSm testSubmit = new SubmitSm();
+                testSubmit.setSourceAddress(new Address((byte)5, (byte)0, "TEST"));
+                testSubmit.setDestAddress(new Address((byte)1, (byte)1, testNumbers.get(0)));
+                testSubmit.setShortMessage("Test".getBytes());
+                
+                byte[] testRecipients = encodeCommaSeparated(testNumbers);
+                testSubmit.addOptionalParameter(new Tlv((short) tag, testRecipients));
+                
+                SmppConnection conn = poolGroup.get(0).borrow(1000);
+                SubmitSmResp resp = conn.send(testSubmit, 3000, null);
+                poolGroup.get(0).returnObject(conn);
+                
+                if (resp.getCommandStatus() == 0) {
+                    log.info("Discovered batch TLV tag: 0x{}", Integer.toHexString(tag));
+                    return Optional.of(tag);
+                }
+                
+            } catch (Exception e) {
+                // Continue to next tag
+            }
+        }
+        
+        log.warn("Could not discover batch TLV tag");
+        return Optional.empty();
+    }
+}
+```
+
+Application Configuration (application.yml):
+
+```yaml
+smpp:
+  batch:
+    enabled: true
+    tlv:
+      tag: 0x1400        # GET THIS FROM YOUR SMSC PROVIDER
+      encoding: COMMA    # COMMA, PIPE, BINARY, SEMICOLON
+    max:
+      size: 100          # Maximum recipients per batch
+```
+
+Updated SmppSendResult Class:
+
+```java
+package com.rogers.ens.sms.sender;
+
+import lombok.Data;
+import lombok.AllArgsConstructor;
+
+@Data
+@AllArgsConstructor
+public class SmppSendResult {
+    private boolean success;
+    private String messageId;
+    private Exception error;
+    private String serverName;
+    private String phoneNumber;
+    private String batchStatus; // "BATCH_SUCCESS", "BATCH_FAILED", "INDIVIDUAL"
+    
+    // For backward compatibility
+    public SmppSendResult(boolean success, String messageId, Exception error, 
+                         String serverName, String phoneNumber) {
+        this(success, messageId, error, serverName, phoneNumber, "INDIVIDUAL");
+    }
+}
+```
+
+How to Get the Correct TLV Tag:
+
+```java
+// 1. Contact your SMSC provider and ask:
+//    "What TLV tag should I use for multiple recipients in SubmitSm?"
+//    "What encoding format? (comma-separated, pipe-separated, binary)"
+
+// 2. If you can't get an answer, try to discover it:
+public void configureBatchSettings() {
+    CloudhopperBatchSender sender = new CloudhopperBatchSender();
+    
+    // Try to discover the TLV tag
+    Optional<Integer> discoveredTag = sender.discoverBatchTlvTag();
+    
+    if (discoveredTag.isPresent()) {
+        batchTlvTag = discoveredTag.get();
+        log.info("Using discovered TLV tag: 0x{}", Integer.toHexString(batchTlvTag));
+    } else {
+        // Test common encodings
+        log.info("Testing different encodings with tag 0x{}", 
+                Integer.toHexString(batchTlvTag));
+        
+        // You'll need to manually test with your SMSC
+    }
+}
+```
+
+Important Notes:
+
+1. This is SMSC-specific - Won't work without correct TLV tag
+2. Test with small batches first (2-3 numbers)
+3. Implement fallback to individual sending
+4. Monitor SMSC response codes - Some return specific errors for invalid TLVs
+
+Immediate next steps:
+
+1. Contact your SMSC provider for the TLV tag
+2. Test with 2 phone numbers first
+3. Enable logging to see SMSC responses
+
+Would you like me to help you create a test script to find the correct TLV tag and encoding?
