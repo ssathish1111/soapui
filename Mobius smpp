@@ -1,0 +1,323 @@
+Ah, I understand now - you need to send to multiple phone numbers in a single SMPP request, not multiple individual requests. This typically uses the SUBMIT_MULTI SMPP command instead of SUBMIT_SM. Let me update the code accordingly:
+
+Updated SMPP Implementation with SubmitMulti Support
+
+1. Update Build Method for Multiple Recipients
+
+```java
+private SubmitMulti buildSubmitMulti(SomeActionContext ctx, List<String> phoneNumbers, String shortCode) 
+        throws SmppInvalidArgumentException {
+    
+    log.debug("Preparing SubmitMulti for {} phone numbers, shortCode: {}", 
+              phoneNumbers.size(), shortCode);
+    
+    // Using Mobius library classes for SubmitMulti
+    SubmitMulti submitMulti = new SubmitMulti();
+    
+    // Set source address (short code)
+    submitMulti.setSourceAddr(new Address(
+        TypeOfNumber.INTERNATIONAL, 
+        NumberingPlanIndicator.ISDN, 
+        shortCode
+    ));
+    
+    // Create destination addresses for all phone numbers
+    DestinationAddress[] destAddresses = new DestinationAddress[phoneNumbers.size()];
+    for (int i = 0; i < phoneNumbers.size(); i++) {
+        destAddresses[i] = new DestinationAddress(
+            new Address(
+                TypeOfNumber.INTERNATIONAL,
+                NumberingPlanIndicator.ISDN,
+                phoneNumbers.get(i)
+            )
+        );
+    }
+    
+    // Set all destination addresses
+    submitMulti.setDestAddresses(destAddresses);
+    
+    submitMulti.setRegisteredDelivery(RegisteredDelivery.SMSC_DELIVERY_RECEIPT_REQUESTED);
+    
+    var message = ctx.getSmsMessageResponse();
+    byte[] messageBytes = message.getBytes(StandardCharsets.UTF_16BE);
+    
+    if (messageBytes.length <= 140) {
+        submitMulti.setShortMessage(messageBytes);
+    } else {
+        // Use message payload for longer messages
+        submitMulti.setShortMessage(new byte[0]);
+        submitMulti.addOptionalParameter(new TLV(Tag.MESSAGE_PAYLOAD, messageBytes));
+    }
+    
+    submitMulti.setDataCoding(DataCoding.UCS2);
+    
+    // Additional SMPP parameters
+    submitMulti.setProtocolId((byte) 0);
+    submitMulti.setPriorityFlag((byte) 0);
+    submitMulti.setScheduleDeliveryTime(null); // Immediate delivery
+    submitMulti.setValidityPeriod(null); // Use SMSC default
+    
+    // Set message reference (optional but recommended for tracking)
+    submitMulti.setServiceType("");
+    submitMulti.setReplaceIfPresentFlag((byte) 0);
+    
+    return submitMulti;
+}
+```
+
+2. Create Method to Send Single Request with Multiple Recipients
+
+```java
+public SmppBulkSendResult sendBulkSingleRequest(SomeActionContext ctx, List<String> phoneNumbers, 
+                                                String shortCode) {
+    
+    if (!config.isSmppHealthCheckEnabled()) {
+        throw new IllegalStateException("SMPP Health Check is disabled. Cannot send SMS.");
+    }
+    
+    if (phoneNumbers == null || phoneNumbers.isEmpty()) {
+        return new SmppBulkSendResult(false, null, 
+            new IllegalArgumentException("Phone numbers list cannot be empty"), 
+            "No recipients provided");
+    }
+    
+    if (phoneNumbers.size() > 100) { // Adjust limit based on SMSC capability
+        return new SmppBulkSendResult(false, null, 
+            new IllegalArgumentException("Too many recipients. Max allowed: 100"), 
+            "Recipient count exceeds limit");
+    }
+    
+    int[] order = poolGroup.poolAttemptOrder();
+    Exception lastError = null;
+    
+    for (int idx : order) {
+        SmppConnectionPool pool = poolGroup.get(idx);
+        SmppConnection conn = null;
+        
+        try {
+            conn = pool.borrowConnection();
+            SmppSendResult tunnelResult = ensureTunnelUp();
+            if (tunnelResult != null) {
+                lastError = tunnelResult.getError();
+                log.error("SSH Tunnel issue for pool {}: {}", pool.getServerName(), lastError.getMessage());
+                continue; // Try next pool
+            }
+            
+            // Build and send SUBMIT_MULTI for all recipients
+            SubmitMulti submitMulti = buildSubmitMulti(ctx, phoneNumbers, shortCode);
+            SubmitMultiResp response = conn.submitMulti(submitMulti, 
+                config.getSmppSubmitTimeoutMs(), tunnelManager);
+            
+            // Process the response which contains results for all recipients
+            return processSubmitMultiResponse(response, phoneNumbers, pool.getServerName());
+            
+        } catch (Exception ex) {
+            lastError = ex;
+            log.error("Failed to send bulk SMS via server {}: {}", 
+                     pool.getServerName(), ex.getMessage());
+            // Try next pool
+        } finally {
+            if (conn != null) {
+                pool.release(conn, tunnelManager);
+            }
+        }
+    }
+    
+    return new SmppBulkSendResult(false, null, lastError, 
+        "All pools failed to send bulk SMS");
+}
+```
+
+3. Process SUBMIT_MULTI Response
+
+```java
+private SmppBulkSendResult processSubmitMultiResponse(SubmitMultiResp response, 
+                                                     List<String> phoneNumbers, 
+                                                     String serverName) {
+    
+    if (response == null) {
+        return new SmppBulkSendResult(false, null, 
+            new SmppException("No response received from SMSC"), 
+            "Null response from SMSC", serverName);
+    }
+    
+    // Check command status
+    if (response.getCommandStatus() != SmppConstants.STATUS_OK) {
+        String errorMsg = "SMSC returned error: " + response.getCommandStatus();
+        return new SmppBulkSendResult(false, response, 
+            new SmppException(errorMsg), errorMsg, serverName);
+    }
+    
+    // Process unsuccessful destinations if any
+    UnsuccessSme[] unsuccessfulDests = response.getUnsuccessSmes();
+    Map<String, String> failedRecipients = new HashMap<>();
+    
+    if (unsuccessfulDests != null && unsuccessfulDests.length > 0) {
+        for (UnsuccessSme unsuccessful : unsuccessfulDests) {
+            String phoneNumber = unsuccessful.getDestinationAddress().getAddress();
+            String errorCode = String.valueOf(unsuccessful.getErrorStatusCode());
+            failedRecipients.put(phoneNumber, errorCode);
+            log.warn("Failed to send to {}: error code {}", phoneNumber, errorCode);
+        }
+    }
+    
+    // Create individual results for each recipient
+    Map<String, IndividualSendResult> individualResults = new HashMap<>();
+    String messageId = response.getMessageId();
+    
+    for (String phoneNumber : phoneNumbers) {
+        if (failedRecipients.containsKey(phoneNumber)) {
+            individualResults.put(phoneNumber, 
+                new IndividualSendResult(false, null, 
+                    "SMSC error: " + failedRecipients.get(phoneNumber), phoneNumber));
+        } else {
+            individualResults.put(phoneNumber, 
+                new IndividualSendResult(true, messageId, null, phoneNumber));
+        }
+    }
+    
+    // Calculate statistics
+    int successful = phoneNumbers.size() - failedRecipients.size();
+    int failed = failedRecipients.size();
+    
+    return new SmppBulkSendResult(
+        failed == 0, // Consider overall success only if all succeeded
+        response,
+        null,
+        individualResults,
+        successful,
+        failed,
+        messageId,
+        serverName
+    );
+}
+```
+
+4. New Result Classes for Bulk Operations
+
+```java
+public class SmppBulkSendResult {
+    private boolean overallSuccess;
+    private SubmitMultiResp response;
+    private Exception error;
+    private Map<String, IndividualSendResult> individualResults;
+    private int successfulCount;
+    private int failedCount;
+    private String messageId; // Main message ID from SMSC
+    private String serverName;
+    private Date timestamp;
+    
+    // Constructor, getters, setters...
+    
+    public boolean isPartiallySuccessful() {
+        return successfulCount > 0 && failedCount > 0;
+    }
+    
+    public List<String> getSuccessfulRecipients() {
+        return individualResults.entrySet().stream()
+            .filter(entry -> entry.getValue().isSuccess())
+            .map(Map.Entry::getKey)
+            .collect(Collectors.toList());
+    }
+    
+    public Map<String, String> getFailedRecipientsWithReasons() {
+        return individualResults.entrySet().stream()
+            .filter(entry -> !entry.getValue().isSuccess())
+            .collect(Collectors.toMap(
+                Map.Entry::getKey,
+                entry -> entry.getValue().getErrorMessage()
+            ));
+    }
+}
+
+public class IndividualSendResult {
+    private boolean success;
+    private String messageId; // Individual message ID (if available)
+    private String errorMessage;
+    private String phoneNumber;
+    
+    // Constructor, getters, setters...
+}
+```
+
+5. Enhanced Connection Pool Method for Bulk Operations
+
+```java
+// In SmppPoolGroup class, add a method to handle bulk operations
+public SmppConnectionPool getOptimalPoolForBulk(int recipientCount) {
+    if (pools == null || pools.isEmpty()) {
+        throw new IllegalStateException("No SMPP pools available");
+    }
+    
+    // Simple round-robin, but could be enhanced with load balancing
+    int index = nextPoolIndex();
+    SmppConnectionPool selectedPool = pools.get(index);
+    
+    // Check if pool can handle the bulk size (optional health check)
+    if (selectedPool.getAvailableConnections() < 1) {
+        log.warn("Selected pool {} has no available connections, trying next", 
+                selectedPool.getServerName());
+        // Try next pool
+        index = (index + 1) % pools.size();
+        selectedPool = pools.get(index);
+    }
+    
+    return selectedPool;
+}
+```
+
+6. Usage Example
+
+```java
+// Send to multiple recipients in a single SMPP request
+List<String> recipients = Arrays.asList(
+    "1234567890",
+    "0987654321", 
+    "5551234567",
+    "4449876543"
+);
+
+SmppBulkSendResult result = smppBulkSmsRemote.sendBulkSingleRequest(
+    context, 
+    recipients, 
+    "SENDER123"
+);
+
+// Check overall result
+if (result.isOverallSuccess()) {
+    log.info("Successfully sent bulk SMS to {} recipients via {}", 
+             result.getSuccessfulCount(), result.getServerName());
+    log.info("Message ID: {}", result.getMessageId());
+} else if (result.isPartiallySuccessful()) {
+    log.warn("Partially successful: {} succeeded, {} failed", 
+             result.getSuccessfulCount(), result.getFailedCount());
+    
+    // Handle failed recipients
+    Map<String, String> failures = result.getFailedRecipientsWithReasons();
+    failures.forEach((phone, reason) -> {
+        log.error("Failed to send to {}: {}", phone, reason);
+        // Optionally retry failed ones individually
+    });
+} else {
+    log.error("Bulk SMS failed: {}", result.getError().getMessage());
+}
+```
+
+Key Features of This Implementation:
+
+1. Single SMPP Request: Uses SUBMIT_MULTI command to send to all recipients in one network call
+2. Efficient: Reduces network overhead compared to individual requests
+3. Detailed Results: Tracks success/failure for each recipient individually
+4. Error Handling: Handles partial failures gracefully
+5. Compatible with Mobius Library: Uses com.mobius-software.protocol classes
+6. Connection Pool Aware: Works with your existing round-robin pool architecture
+7. SSH Tunnel Integration: Maintains your existing tunnel management
+
+Notes:
+
+· The maximum number of recipients per SUBMIT_MULTI depends on your SMSC's configuration (typically 100-255)
+· Some SMSCs may not support SUBMIT_MULTI - you'll need to check with your provider
+· The response may contain individual message IDs for each recipient or a single bulk message ID
+· Consider adding rate limiting if sending to very large lists (break into chunks of 100)
+
+This implementation sends all phone numbers in a single SMPP hit while providing detailed feedback about each recipient's status.
