@@ -896,3 +896,515 @@ public class ResilienceDebugController {
     }
     
     @GetMapping(
+
+
+I understand. You only want to load and configure services that are explicitly defined in the YAML configuration, not all services in the ApiServiceEnum. Here's the updated implementation:
+
+1. Updated ResilienceConfigProperties.java
+
+```java
+package com.rogers.api.config;
+
+import com.rogers.api.model.ResilienceService;
+import lombok.Data;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.boot.context.properties.ConfigurationProperties;
+import org.springframework.context.annotation.Configuration;
+
+import javax.annotation.PostConstruct;
+import java.util.HashMap;
+import java.util.Map;
+
+@Slf4j
+@Configuration
+@ConfigurationProperties(prefix = "application.resilience.circuit-breaker")
+@Data
+public class ResilienceConfigProperties {
+    
+    // Only services defined in YAML will be loaded here
+    private Map<String, ResilienceService> services = new HashMap<>();
+
+    @PostConstruct
+    public void init() {
+        log.info("Loaded resilience configurations for {} services: {}", 
+            services.size(), services.keySet());
+    }
+
+    public ResilienceService getConfigForService(String serviceName) {
+        ResilienceService config = services.get(serviceName);
+        if (config == null) {
+            throw new IllegalArgumentException(
+                String.format("No resilience configuration found for service: %s", serviceName)
+            );
+        }
+        return config;
+    }
+    
+    public boolean hasServiceConfig(String serviceName) {
+        return services.containsKey(serviceName);
+    }
+    
+    public Set<String> getConfiguredServiceNames() {
+        return services.keySet();
+    }
+}
+```
+
+2. Updated Circuit Breaker Configuration
+
+```java
+@Configuration
+@Slf4j
+public class ResilienceConfig {
+    
+    private final ResilienceConfigProperties configProperties;
+    
+    public ResilienceConfig(ResilienceConfigProperties configProperties) {
+        this.configProperties = configProperties;
+    }
+    
+    @Bean
+    public CircuitBreakerRegistry circuitBreakerRegistry() {
+        log.info("Initializing CircuitBreakerRegistry...");
+        
+        Map<String, CircuitBreakerConfig> serviceConfigs = new HashMap<>();
+        
+        // Only configure services that are defined in YAML
+        for (Map.Entry<String, ResilienceService> entry : configProperties.getServices().entrySet()) {
+            String serviceName = entry.getKey();
+            ResilienceService serviceConfig = entry.getValue();
+            
+            try {
+                CircuitBreakerConfig cbConfig = CircuitBreakerConfig.custom()
+                    .failureRateThreshold(serviceConfig.getFailureRateThreshold())
+                    .waitDurationInOpenState(Duration.ofSeconds(serviceConfig.getWaitDurationInOpenStatesseconds()))
+                    .slidingWindowSize(serviceConfig.getSlidingWindowSize())
+                    .slidingWindowType(CircuitBreakerConfig.SlidingWindowType.valueOf(
+                        serviceConfig.getSlidingWindowType().toUpperCase()))
+                    .permittedNumberOfCallsInHalfOpenState(serviceConfig.getPermittedCallsInHalfOpenState())
+                    .automaticTransitionFromOpenToHalfOpenEnabled(serviceConfig.isAutoOpenToHalfOpenEnabled())
+                    .recordException(e -> e instanceof WebClientResponseException)
+                    .build();
+                
+                serviceConfigs.put(serviceName, cbConfig);
+                
+                log.info("Configured circuit breaker for {}: failureRateThreshold={}, waitDuration={}s, slidingWindowSize={}",
+                    serviceName, 
+                    serviceConfig.getFailureRateThreshold(),
+                    serviceConfig.getWaitDurationInOpenStatesseconds(),
+                    serviceConfig.getSlidingWindowSize());
+                
+            } catch (Exception e) {
+                log.error("Failed to configure circuit breaker for service: {}", serviceName, e);
+                throw new IllegalStateException(
+                    String.format("Invalid circuit breaker configuration for service %s: %s", 
+                        serviceName, e.getMessage()), e);
+            }
+        }
+        
+        if (serviceConfigs.isEmpty()) {
+            log.warn("No circuit breaker configurations found. Circuit breaker functionality will be disabled.");
+        } else {
+            log.info("CircuitBreakerRegistry initialized with {} service(s): {}", 
+                serviceConfigs.size(), serviceConfigs.keySet());
+        }
+        
+        CircuitBreakerRegistry registry = CircuitBreakerRegistry.of(serviceConfigs);
+        
+        // Register event listeners only if we have configurations
+        if (!serviceConfigs.isEmpty()) {
+            registry.getEventPublisher()
+                .onEntryAdded(event -> registerStateListener(event.getAddedEntry()));
+        }
+        
+        return registry;
+    }
+    
+    @Bean
+    public RetryRegistry retryRegistry() {
+        log.info("Initializing RetryRegistry...");
+        
+        Map<String, RetryConfig> serviceConfigs = new HashMap<>();
+        
+        // Only configure retries for services that have retry enabled in YAML
+        for (Map.Entry<String, ResilienceService> entry : configProperties.getServices().entrySet()) {
+            String serviceName = entry.getKey();
+            ResilienceService serviceConfig = entry.getValue();
+            
+            if (serviceConfig.isRetryEnabled()) {
+                try {
+                    RetryConfig retryConfig = RetryConfig.custom()
+                        .maxAttempts(serviceConfig.getRetryMaxAttempts())
+                        .waitDuration(Duration.ofSeconds(serviceConfig.getRetryWaitDurationSeconds()))
+                        .ignoreExceptions(APIFailureException.class)
+                        .build();
+                    
+                    serviceConfigs.put(serviceName, retryConfig);
+                    
+                    log.info("Configured retry for {}: maxAttempts={}, waitDuration={}s",
+                        serviceName,
+                        serviceConfig.getRetryMaxAttempts(),
+                        serviceConfig.getRetryWaitDurationSeconds());
+                    
+                } catch (Exception e) {
+                    log.error("Failed to configure retry for service: {}", serviceName, e);
+                    throw new IllegalStateException(
+                        String.format("Invalid retry configuration for service %s: %s", 
+                            serviceName, e.getMessage()), e);
+                }
+            }
+        }
+        
+        if (serviceConfigs.isEmpty()) {
+            log.warn("No retry configurations found. Retry functionality will be disabled.");
+        } else {
+            log.info("RetryRegistry initialized with {} service(s): {}", 
+                serviceConfigs.size(), serviceConfigs.keySet());
+        }
+        
+        return RetryRegistry.of(serviceConfigs);
+    }
+    
+    private void registerStateListener(CircuitBreaker circuitBreaker) {
+        circuitBreaker.getEventPublisher()
+            .onStateTransition(event -> {
+                log.info("CircuitBreaker [{}] transitioned from {} to {}", 
+                    circuitBreaker.getName(), event.getFromState(), event.getToState());
+            });
+    }
+}
+```
+
+3. Updated ResilientServiceExecutor
+
+```java
+@Component
+@Slf4j
+public class ResilientServiceExecutor {
+    
+    private final CircuitBreakerRegistry circuitBreakerRegistry;
+    private final RetryRegistry retryRegistry;
+    private final ResilienceConfigProperties configProperties;
+    
+    private final Map<String, CircuitBreaker> circuitBreakerCache = new ConcurrentHashMap<>();
+    private final Map<String, Retry> retryCache = new ConcurrentHashMap<>();
+    
+    public ResilientServiceExecutor(CircuitBreakerRegistry circuitBreakerRegistry,
+                                   RetryRegistry retryRegistry,
+                                   ResilienceConfigProperties configProperties) {
+        this.circuitBreakerRegistry = circuitBreakerRegistry;
+        this.retryRegistry = retryRegistry;
+        this.configProperties = configProperties;
+        
+        log.info("ResilientServiceExecutor initialized for {} configured service(s)", 
+            configProperties.getServices().size());
+    }
+    
+    public <T> T executeWithResilience(String serviceName, Supplier<T> supplier) {
+        // Check if service is configured
+        if (!configProperties.hasServiceConfig(serviceName)) {
+            log.warn("Service {} is not configured for resilience. Executing without circuit breaker or retry.", 
+                serviceName);
+            return supplier.get();
+        }
+        
+        // Get service-specific configuration
+        ResilienceService serviceConfig = configProperties.getConfigForService(serviceName);
+        
+        // Get or create circuit breaker
+        CircuitBreaker cb = circuitBreakerCache.computeIfAbsent(
+            serviceName,
+            name -> {
+                try {
+                    return circuitBreakerRegistry.circuitBreaker(name);
+                } catch (Exception e) {
+                    log.error("Failed to get circuit breaker for service: {}", serviceName, e);
+                    throw new ServiceConfigurationException(
+                        String.format("Circuit breaker not available for service: %s", serviceName), e);
+                }
+            }
+        );
+        
+        Supplier<T> decoratedSupplier;
+        
+        if (serviceConfig.isRetryEnabled()) {
+            // Get or create retry
+            Retry retry = retryCache.computeIfAbsent(
+                serviceName,
+                name -> {
+                    try {
+                        return retryRegistry.retry(name);
+                    } catch (Exception e) {
+                        log.error("Failed to get retry for service: {}", serviceName, e);
+                        throw new ServiceConfigurationException(
+                            String.format("Retry not available for service: %s", serviceName), e);
+                    }
+                }
+            );
+            
+            decoratedSupplier = CircuitBreaker.decorateSupplier(
+                cb, 
+                Retry.decorateSupplier(retry, supplier)
+            );
+        } else {
+            decoratedSupplier = CircuitBreaker.decorateSupplier(cb, supplier);
+        }
+        
+        return decoratedSupplier.get();
+    }
+    
+    public <T> T executeWithResilience(ApiServiceEnum service, Supplier<T> supplier) {
+        return executeWithResilience(service.getServiceName(), supplier);
+    }
+    
+    public CircuitBreaker.State getServiceState(String serviceName) {
+        if (!configProperties.hasServiceConfig(serviceName)) {
+            log.debug("Service {} is not configured for resilience", serviceName);
+            return CircuitBreaker.State.CLOSED;
+        }
+        
+        try {
+            CircuitBreaker cb = circuitBreakerCache.get(serviceName);
+            if (cb == null) {
+                cb = circuitBreakerRegistry.circuitBreaker(serviceName);
+                circuitBreakerCache.put(serviceName, cb);
+            }
+            return cb.getState();
+        } catch (Exception e) {
+            log.warn("Could not get state for service: {}", serviceName, e);
+            return CircuitBreaker.State.CLOSED;
+        }
+    }
+    
+    public boolean isServiceConfigured(String serviceName) {
+        return configProperties.hasServiceConfig(serviceName);
+    }
+    
+    public Map<String, Object> getServiceConfigInfo(String serviceName) {
+        if (!configProperties.hasServiceConfig(serviceName)) {
+            throw new IllegalArgumentException(
+                String.format("Service %s is not configured for resilience", serviceName)
+            );
+        }
+        
+        ResilienceService config = configProperties.getConfigForService(serviceName);
+        Map<String, Object> info = new HashMap<>();
+        
+        info.put("failureRateThreshold", config.getFailureRateThreshold());
+        info.put("waitDurationInOpenStatesseconds", config.getWaitDurationInOpenStatesseconds());
+        info.put("slidingWindowSize", config.getSlidingWindowSize());
+        info.put("slidingWindowType", config.getSlidingWindowType());
+        info.put("permittedCallsInHalfOpenState", config.getPermittedCallsInHalfOpenState());
+        info.put("autoOpenToHalfOpenEnabled", config.isAutoOpenToHalfOpenEnabled());
+        info.put("retryMaxAttempts", config.getRetryMaxAttempts());
+        info.put("retryWaitDurationSeconds", config.getRetryWaitDurationSeconds());
+        info.put("retryEnabled", config.isRetryEnabled());
+        
+        // Add current state
+        info.put("currentState", getServiceState(serviceName));
+        
+        return info;
+    }
+    
+    public Map<String, Object> getAllConfiguredServicesInfo() {
+        Map<String, Object> result = new HashMap<>();
+        
+        for (String serviceName : configProperties.getConfiguredServiceNames()) {
+            result.put(serviceName, getServiceConfigInfo(serviceName));
+        }
+        
+        return result;
+    }
+}
+```
+
+4. Service Configuration Exception
+
+```java
+public class ServiceConfigurationException extends RuntimeException {
+    
+    public ServiceConfigurationException(String message) {
+        super(message);
+    }
+    
+    public ServiceConfigurationException(String message, Throwable cause) {
+        super(message, cause);
+    }
+}
+```
+
+5. Configuration Validator (Optional - Only Validates Configured Services)
+
+```java
+@Component
+@Slf4j
+public class ResilienceConfigValidator implements ApplicationRunner {
+    
+    private final ResilienceConfigProperties configProperties;
+    
+    public ResilienceConfigValidator(ResilienceConfigProperties configProperties) {
+        this.configProperties = configProperties;
+    }
+    
+    @Override
+    public void run(ApplicationArguments args) {
+        log.info("=== Resilience Configuration Validation ===");
+        
+        if (configProperties.getServices().isEmpty()) {
+            log.warn("No resilience configurations found in application.yml");
+            return;
+        }
+        
+        log.info("Validating {} configured service(s)...", configProperties.getServices().size());
+        
+        for (Map.Entry<String, ResilienceService> entry : configProperties.getServices().entrySet()) {
+            String serviceName = entry.getKey();
+            ResilienceService config = entry.getValue();
+            
+            try {
+                validateServiceConfig(serviceName, config);
+                log.info("✓ Service [{}]: CB(failureRate={}, windowSize={}), Retry(enabled={}, maxAttempts={})",
+                    serviceName,
+                    config.getFailureRateThreshold(),
+                    config.getSlidingWindowSize(),
+                    config.isRetryEnabled(),
+                    config.getRetryMaxAttempts()
+                );
+            } catch (Exception e) {
+                log.error("✗ Invalid configuration for service [{}]: {}", serviceName, e.getMessage());
+                throw e;
+            }
+        }
+        
+        log.info("✓ All {} configured service(s) have valid resilience configurations", 
+            configProperties.getServices().size());
+    }
+    
+    private void validateServiceConfig(String serviceName, ResilienceService config) {
+        if (config.getFailureRateThreshold() <= 0 || config.getFailureRateThreshold() > 100) {
+            throw new IllegalStateException(
+                String.format("Invalid failureRateThreshold: %s. Must be between 0 and 100", 
+                    config.getFailureRateThreshold())
+            );
+        }
+        
+        if (config.getWaitDurationInOpenStatesseconds() <= 0) {
+            throw new IllegalStateException(
+                String.format("Invalid waitDurationInOpenStatesseconds: %s. Must be positive", 
+                    config.getWaitDurationInOpenStatesseconds())
+            );
+        }
+        
+        if (config.getSlidingWindowSize() <= 0) {
+            throw new IllegalStateException(
+                String.format("Invalid slidingWindowSize: %s. Must be positive", 
+                    config.getSlidingWindowSize())
+            );
+        }
+        
+        if (!config.getSlidingWindowType().equals("COUNT_BASED") && 
+            !config.getSlidingWindowType().equals("TIME_BASED")) {
+            throw new IllegalStateException(
+                String.format("Invalid slidingWindowType: %s. Must be COUNT_BASED or TIME_BASED", 
+                    config.getSlidingWindowType())
+            );
+        }
+        
+        if (config.getPermittedCallsInHalfOpenState() <= 0) {
+            throw new IllegalStateException(
+                String.format("Invalid permittedCallsInHalfOpenState: %s. Must be positive", 
+                    config.getPermittedCallsInHalfOpenState())
+            );
+        }
+        
+        if (config.isRetryEnabled()) {
+            if (config.getRetryMaxAttempts() <= 0) {
+                throw new IllegalStateException(
+                    String.format("Invalid retryMaxAttempts: %s. Must be positive when retry is enabled", 
+                        config.getRetryMaxAttempts())
+                );
+            }
+            
+            if (config.getRetryWaitDurationSeconds() < 0) {
+                throw new IllegalStateException(
+                    String.format("Invalid retryWaitDurationSeconds: %s. Must be non-negative", 
+                        config.getRetryWaitDurationSeconds())
+                );
+            }
+        }
+    }
+}
+```
+
+6. Health/Info Endpoint
+
+```java
+@RestController
+@RequestMapping("/api/resilience")
+@Slf4j
+public class ResilienceInfoController {
+    
+    private final ResilientServiceExecutor executor;
+    
+    public ResilienceInfoController(ResilientServiceExecutor executor) {
+        this.executor = executor;
+    }
+    
+    @GetMapping("/services")
+    public Map<String, Object> getConfiguredServices() {
+        return executor.getAllConfiguredServicesInfo();
+    }
+    
+    @GetMapping("/services/{serviceName}")
+    public ResponseEntity<?> getServiceInfo(@PathVariable String serviceName) {
+        if (!executor.isServiceConfigured(serviceName)) {
+            return ResponseEntity.status(HttpStatus.NOT_FOUND)
+                .body(Map.of(
+                    "error", "Service not configured",
+                    "message", String.format("Service '%s' is not configured for resilience", serviceName),
+                    "configuredServices", executor.getAllConfiguredServicesInfo().keySet()
+                ));
+        }
+        
+        return ResponseEntity.ok(executor.getServiceConfigInfo(serviceName));
+    }
+    
+    @GetMapping("/services/{serviceName}/health")
+    public ResponseEntity<?> getServiceHealth(@PathVariable String serviceName) {
+        if (!executor.isServiceConfigured(serviceName)) {
+            return ResponseEntity.status(HttpStatus.NOT_FOUND)
+                .body(Map.of(
+                    "service", serviceName,
+                    "configured", false,
+                    "message", "Service is not configured for resilience monitoring"
+                ));
+        }
+        
+        CircuitBreaker.State state = executor.getServiceState(serviceName);
+        boolean isHealthy = state != CircuitBreaker.State.OPEN;
+        
+        return ResponseEntity.ok(Map.of(
+            "service", serviceName,
+            "configured", true,
+            "state", state.name(),
+            "healthy", isHealthy,
+            "timestamp", Instant.now().toString()
+        ));
+    }
+}
+```
+
+7. Usage Example in Common Utility
+
+```java
+@Service
+@Slf4j
+public class CommonServiceUtil {
+    
+    private final ResilientServiceExecutor resilientExecutor;
+    
+    public CommonServiceUtil(ResilientServiceExecutor resilientExecutor) {
+        this.resilientExecutor = resilientExecutor;
+    }
+    
+    public String callServiceWithResilience(String serviceNa
