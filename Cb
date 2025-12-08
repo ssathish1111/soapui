@@ -1,0 +1,371 @@
+Here's the updated code to use the explicit service-specific configurations:
+
+1. Update application.yml with Explicit Configurations for All Services
+
+```yaml
+application:
+  resilience:
+    services:
+      RENDER_SERVICE:
+        failureRateThreshold: 50
+        waitDurationInOpenStateSeconds: 60
+        slidingWindowSize: 10
+        slidingWindowType: COUNT_BASED
+        permittedCallsInHalfOpenState: 5
+        automaticTransitionFromOpenToHalfOpenEnabled: true
+        retryMaxAttempts: 3
+        retryWaitDurationSeconds: 1
+        retryEnabled: true
+      
+      PDF_GENERATOR_SERVICE:
+        failureRateThreshold: 60
+        waitDurationInOpenStateSeconds: 120
+        slidingWindowSize: 5
+        slidingWindowType: COUNT_BASED
+        permittedCallsInHalfOpenState: 3
+        automaticTransitionFromOpenToHalfOpenEnabled: false
+        retryMaxAttempts: 2
+        retryWaitDurationSeconds: 2
+        retryEnabled: true
+      
+      PUBLISHER_SERVICE:
+        failureRateThreshold: 40
+        waitDurationInOpenStateSeconds: 30
+        slidingWindowSize: 20
+        slidingWindowType: COUNT_BASED
+        permittedCallsInHalfOpenState: 4
+        automaticTransitionFromOpenToHalfOpenEnabled: true
+        retryMaxAttempts: 3
+        retryWaitDurationSeconds: 1
+        retryEnabled: true
+      
+      SWIP_SERVER:
+        failureRateThreshold: 70
+        waitDurationInOpenStateSeconds: 90
+        slidingWindowSize: 15
+        slidingWindowType: COUNT_BASED
+        permittedCallsInHalfOpenState: 5
+        automaticTransitionFromOpenToHalfOpenEnabled: true
+        retryMaxAttempts: 4
+        retryWaitDurationSeconds: 1
+        retryEnabled: false
+      
+      # Add configurations for DAL_SERVICE, SNSC_SERVICE, IML_SERVICE, SCHEDULER_SERVICE similarly
+```
+
+2. Update ResilienceConfigProperties Class
+
+```java
+package com.rogers.api.config;
+
+import com.rogers.api.model.ServiceResilienceConfig;
+import lombok.Data;
+import org.springframework.boot.context.properties.ConfigurationProperties;
+import org.springframework.context.annotation.Configuration;
+
+import java.util.HashMap;
+import java.util.Map;
+
+@Configuration
+@ConfigurationProperties(prefix = "application.resilience")
+@Data
+public class ResilienceConfigProperties {
+    private Map<String, ServiceResilienceConfig> services = new HashMap<>();
+    
+    // Get config for specific service - throws exception if not configured
+    public ServiceResilienceConfig getConfigForService(String serviceName) {
+        ServiceResilienceConfig config = services.get(serviceName);
+        if (config == null) {
+            throw new IllegalStateException(
+                String.format("No resilience configuration found for service: %s", serviceName)
+            );
+        }
+        return config;
+    }
+}
+```
+
+3. Update ServiceResilienceConfig Model Class
+
+```java
+package com.rogers.api.model;
+
+import lombok.Data;
+
+@Data
+public class ServiceResilienceConfig {
+    private float failureRateThreshold;
+    private long waitDurationInOpenStateSeconds;
+    private int slidingWindowSize;
+    private String slidingWindowType;
+    private int permittedCallsInHalfOpenState;
+    private boolean automaticTransitionFromOpenToHalfOpenEnabled;
+    
+    private int retryMaxAttempts;
+    private long retryWaitDurationSeconds;
+    private boolean retryEnabled;
+}
+```
+
+4. Create a Configuration Validator
+
+```java
+@Component
+public class ResilienceConfigValidator implements ApplicationRunner {
+    
+    private final ResilienceConfigProperties resilienceConfigProperties;
+    
+    public ResilienceConfigValidator(ResilienceConfigProperties resilienceConfigProperties) {
+        this.resilienceConfigProperties = resilienceConfigProperties;
+    }
+    
+    @Override
+    public void run(ApplicationArguments args) {
+        log.info("Validating resilience configurations...");
+        
+        // Check that all services in ApiServiceEnum have configurations
+        for (ApiServiceEnum service : ApiServiceEnum.values()) {
+            String serviceName = service.getServiceName();
+            ServiceResilienceConfig config = resilienceConfigProperties.getServices().get(serviceName);
+            
+            if (config == null) {
+                throw new IllegalStateException(
+                    String.format("Missing resilience configuration for service: %s", serviceName)
+                );
+            }
+            
+            // Validate configuration values
+            validateConfig(serviceName, config);
+            
+            log.info("✓ Service [{}] configured with: failureRateThreshold={}, retryEnabled={}", 
+                serviceName, config.getFailureRateThreshold(), config.isRetryEnabled());
+        }
+        
+        log.info("All {} services have valid resilience configurations", ApiServiceEnum.values().length);
+    }
+    
+    private void validateConfig(String serviceName, ServiceResilienceConfig config) {
+        if (config.getFailureRateThreshold() <= 0 || config.getFailureRateThreshold() > 100) {
+            throw new IllegalStateException(
+                String.format("Invalid failureRateThreshold for service %s: %s", 
+                    serviceName, config.getFailureRateThreshold())
+            );
+        }
+        
+        if (config.getWaitDurationInOpenStateSeconds() <= 0) {
+            throw new IllegalStateException(
+                String.format("Invalid waitDurationInOpenStateSeconds for service %s: %s", 
+                    serviceName, config.getWaitDurationInOpenStateSeconds())
+            );
+        }
+        
+        // Add more validations as needed
+    }
+}
+```
+
+5. Update Resilience Configuration Beans
+
+```java
+@Configuration
+public class ResilienceConfig {
+    
+    private final ResilienceConfigProperties resilienceConfigProperties;
+    
+    public ResilienceConfig(ResilienceConfigProperties resilienceConfigProperties) {
+        this.resilienceConfigProperties = resilienceConfigProperties;
+    }
+    
+    @Bean
+    public CircuitBreakerRegistry circuitBreakerRegistry() {
+        log.info("Initializing CircuitBreakerRegistry with service-specific configurations...");
+        
+        // Create a map of configurations for all services
+        Map<String, CircuitBreakerConfig> configs = new HashMap<>();
+        
+        for (ApiServiceEnum service : ApiServiceEnum.values()) {
+            String serviceName = service.getServiceName();
+            ServiceResilienceConfig serviceConfig = resilienceConfigProperties.getConfigForService(serviceName);
+            
+            CircuitBreakerConfig cbConfig = CircuitBreakerConfig.custom()
+                .failureRateThreshold(serviceConfig.getFailureRateThreshold())
+                .waitDurationInOpenState(Duration.ofSeconds(serviceConfig.getWaitDurationInOpenStateSeconds()))
+                .slidingWindowSize(serviceConfig.getSlidingWindowSize())
+                .slidingWindowType(CircuitBreakerConfig.SlidingWindowType.valueOf(serviceConfig.getSlidingWindowType()))
+                .permittedNumberOfCallsInHalfOpenState(serviceConfig.getPermittedCallsInHalfOpenState())
+                .automaticTransitionFromOpenToHalfOpenEnabled(serviceConfig.isAutomaticTransitionFromOpenToHalfOpenEnabled())
+                .recordException(e -> e instanceof WebClientResponseException)
+                .build();
+            
+            configs.put(serviceName, cbConfig);
+        }
+        
+        // Create registry with all configurations
+        CircuitBreakerRegistry registry = CircuitBreakerRegistry.of(configs);
+        
+        // Register event listeners
+        registry.getEventPublisher()
+            .onEntryAdded(event -> registerStateListener(event.getAddedEntry()));
+        
+        return registry;
+    }
+    
+    private void registerStateListener(CircuitBreaker circuitBreaker) {
+        circuitBreaker.getEventPublisher()
+            .onStateTransition(event -> {
+                log.info("CircuitBreaker [{}] transitioned from {} to {}", 
+                    circuitBreaker.getName(), event.getFromState(), event.getToState());
+            });
+    }
+    
+    @Bean
+    public RetryRegistry retryRegistry() {
+        log.info("Initializing RetryRegistry with service-specific configurations...");
+        
+        // Create a map of configurations for all services
+        Map<String, RetryConfig> configs = new HashMap<>();
+        
+        for (ApiServiceEnum service : ApiServiceEnum.values()) {
+            String serviceName = service.getServiceName();
+            ServiceResilienceConfig serviceConfig = resilienceConfigProperties.getConfigForService(serviceName);
+            
+            if (serviceConfig.isRetryEnabled()) {
+                RetryConfig retryConfig = RetryConfig.custom()
+                    .maxAttempts(serviceConfig.getRetryMaxAttempts())
+                    .waitDuration(Duration.ofSeconds(serviceConfig.getRetryWaitDurationSeconds()))
+                    .ignoreExceptions(APIFailureException.class)
+                    .build();
+                
+                configs.put(serviceName, retryConfig);
+            }
+        }
+        
+        return RetryRegistry.of(configs);
+    }
+}
+```
+
+6. Update ResilientServiceExecutor
+
+```java
+@Component
+public class ResilientServiceExecutor {
+    
+    private final CircuitBreakerRegistry circuitBreakerRegistry;
+    private final RetryRegistry retryRegistry;
+    private final ResilienceConfigProperties configProperties;
+    
+    public ResilientServiceExecutor(CircuitBreakerRegistry circuitBreakerRegistry,
+                                   RetryRegistry retryRegistry,
+                                   ResilienceConfigProperties configProperties) {
+        this.circuitBreakerRegistry = circuitBreakerRegistry;
+        this.retryRegistry = retryRegistry;
+        this.configProperties = configProperties;
+    }
+    
+    public <T> T executeWithResilience(ApiServiceEnum service, Supplier<T> supplier) {
+        String serviceName = service.getServiceName();
+        
+        // Get service-specific config to check if retry is enabled
+        ServiceResilienceConfig serviceConfig = configProperties.getConfigForService(serviceName);
+        
+        // Get circuit breaker for this service
+        CircuitBreaker cb = circuitBreakerRegistry.circuitBreaker(serviceName);
+        
+        Supplier<T> decoratedSupplier;
+        
+        if (serviceConfig.isRetryEnabled()) {
+            Retry retry = retryRegistry.retry(serviceName);
+            decoratedSupplier = CircuitBreaker.decorateSupplier(
+                cb, 
+                Retry.decorateSupplier(retry, supplier)
+            );
+        } else {
+            decoratedSupplier = CircuitBreaker.decorateSupplier(cb, supplier);
+        }
+        
+        return decoratedSupplier.get();
+    }
+    
+    public CircuitBreaker.State getServiceState(String serviceName) {
+        try {
+            CircuitBreaker cb = circuitBreakerRegistry.circuitBreaker(serviceName);
+            return cb.getState();
+        } catch (Exception e) {
+            log.warn("Could not get state for service: {}", serviceName);
+            return CircuitBreaker.State.CLOSED;
+        }
+    }
+    
+    public Map<String, Object> getServiceConfigInfo(String serviceName) {
+        ServiceResilienceConfig config = configProperties.getConfigForService(serviceName);
+        Map<String, Object> info = new HashMap<>();
+        
+        info.put("failureRateThreshold", config.getFailureRateThreshold());
+        info.put("waitDurationInOpenStateSeconds", config.getWaitDurationInOpenStateSeconds());
+        info.put("slidingWindowSize", config.getSlidingWindowSize());
+        info.put("retryEnabled", config.isRetryEnabled());
+        info.put("retryMaxAttempts", config.getRetryMaxAttempts());
+        
+        return info;
+    }
+}
+```
+
+7. Create a Configuration Endpoint
+
+```java
+@RestController
+@RequestMapping("/api/resilience/config")
+public class ResilienceConfigController {
+    
+    private final ResilienceConfigProperties configProperties;
+    private final ResilientServiceExecutor executor;
+    
+    public ResilienceConfigController(ResilienceConfigProperties configProperties,
+                                     ResilientServiceExecutor executor) {
+        this.configProperties = configProperties;
+        this.executor = executor;
+    }
+    
+    @GetMapping("/services")
+    public Map<String, Object> getAllServiceConfigs() {
+        Map<String, Object> result = new HashMap<>();
+        
+        for (ApiServiceEnum service : ApiServiceEnum.values()) {
+            String serviceName = service.getServiceName();
+            
+            Map<String, Object> serviceInfo = new HashMap<>();
+            serviceInfo.put("config", configProperties.getConfigForService(serviceName));
+            serviceInfo.put("currentState", executor.getServiceState(serviceName));
+            
+            result.put(serviceName, serviceInfo);
+        }
+        
+        return result;
+    }
+    
+    @GetMapping("/services/{serviceName}")
+    public Map<String, Object> getServiceConfig(@PathVariable String serviceName) {
+        ServiceResilienceConfig config = configProperties.getConfigForService(serviceName);
+        Map<String, Object> result = new HashMap<>();
+        
+        result.put("config", config);
+        result.put("currentState", executor.getServiceState(serviceName));
+        
+        return result;
+    }
+}
+```
+
+Key Features of This Implementation:
+
+1. Explicit Configurations: Every service must have its configuration defined in the YAML file
+2. Validation at Startup: Application fails fast if any service is missing configuration
+3. Service-Specific Settings: Each service can have completely different circuit breaker and retry settings
+4. No Defaults: No fallback to default configurations - everything is explicit
+5. Easy to Monitor: Endpoints to view all service configurations and current states
+6. Type-Safe Configuration: Using Spring's @ConfigurationProperties for type-safe configuration binding
+7. Runtime Configuration Access: Easy to access service-specific configurations at runtime
+
+This approach ensures you have full control over each service's resilience behavior and can easily see what's configured for each service.
