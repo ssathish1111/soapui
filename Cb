@@ -369,3 +369,530 @@ Key Features of This Implementation:
 7. Runtime Configuration Access: Easy to access service-specific configurations at runtime
 
 This approach ensures you have full control over each service's resilience behavior and can easily see what's configured for each service.
+Option 3 Implementation: Custom Setters with @JsonProperty
+
+Here's the complete implementation using @JsonProperty to map kebab-case YAML properties to camelCase Java fields:
+
+1. Updated application.yml
+
+```yaml
+application:
+  graceful:
+    timeout: ${GRACEFUL_SHUTDOWN_TIMEOUT} # sec
+    wait:
+      interval: ${GRACEFUL_SHUTDOWN_WAIT_INTERVAL} # sec
+  
+  resilience:
+    circuit-breaker:
+      services:
+        RENDER_SERVICE:
+          failure-rate-threshold: 50
+          wait-duration-in-open-state: 60
+          sliding-window-size: 10
+          sliding-window-type: COUNT_BASED
+          permitted-calls-in-half-open-state: 5
+          auto-open-to-half-open-enabled: true
+          retry-max-attempts: 3
+          retry-wait-duration-seconds: 1
+          retry-enabled: true
+        
+        PDF_GENERATOR_SERVICE:
+          failure-rate-threshold: 50
+          wait-duration-in-open-state: 60
+          sliding-window-size: 10
+          sliding-window-type: COUNT_BASED
+          permitted-calls-in-half-open-state: 5
+          auto-open-to-half-open-enabled: true
+          retry-max-attempts: 3
+          retry-wait-duration-seconds: 1
+          retry-enabled: true
+        
+        PUBLISHER_SERVICE:
+          failure-rate-threshold: 60
+          wait-duration-in-open-state: 90
+          sliding-window-size: 20
+          sliding-window-type: COUNT_BASED
+          permitted-calls-in-half-open-state: 4
+          auto-open-to-half-open-enabled: true
+          retry-max-attempts: 3
+          retry-wait-duration-seconds: 1
+          retry-enabled: true
+        
+        SWIP_SERVER:
+          failure-rate-threshold: 70
+          wait-duration-in-open-state: 120
+          sliding-window-size: 25
+          sliding-window-type: COUNT_BASED
+          permitted-calls-in-half-open-state: 2
+          auto-open-to-half-open-enabled: true
+          retry-max-attempts: 1
+          retry-wait-duration-seconds: 0
+          retry-enabled: false
+        
+        DAL_SERVICE:
+          failure-rate-threshold: 55
+          wait-duration-in-open-state: 75
+          sliding-window-size: 12
+          sliding-window-type: COUNT_BASED
+          permitted-calls-in-half-open-state: 5
+          auto-open-to-half-open-enabled: true
+          retry-max-attempts: 4
+          retry-wait-duration-seconds: 3
+          retry-enabled: true
+        
+        SNSC_SERVICE:
+          failure-rate-threshold: 45
+          wait-duration-in-open-state: 60
+          sliding-window-size: 18
+          sliding-window-type: COUNT_BASED
+          permitted-calls-in-half-open-state: 3
+          auto-open-to-half-open-enabled: false
+          retry-max-attempts: 2
+          retry-wait-duration-seconds: 2
+          retry-enabled: true
+        
+        IML_SERVICE:
+          failure-rate-threshold: 65
+          wait-duration-in-open-state: 100
+          sliding-window-size: 8
+          sliding-window-type: COUNT_BASED
+          permitted-calls-in-half-open-state: 4
+          auto-open-to-half-open-enabled: true
+          retry-max-attempts: 3
+          retry-wait-duration-seconds: 1
+          retry-enabled: true
+        
+        SCHEDULER_SERVICE:
+          failure-rate-threshold: 35
+          wait-duration-in-open-state: 50
+          sliding-window-size: 30
+          sliding-window-type: COUNT_BASED
+          permitted-calls-in-half-open-state: 6
+          auto-open-to-half-open-enabled: true
+          retry-max-attempts: 5
+          retry-wait-duration-seconds: 1
+          retry-enabled: true
+```
+
+2. Updated ResilienceService.java with Custom Setters
+
+```java
+package com.rogers.api.model;
+
+import com.fasterxml.jackson.annotation.JsonProperty;
+import lombok.Data;
+
+@Data
+public class ResilienceService {
+    
+    // Keep your original field names as they are
+    private float failureRateThreshold;
+    private long waitDurationInOpenStatesseconds;
+    private int slidingWindowSize;
+    private String slidingWindowType;
+    private int permittedCallsInHalfOpenState;
+    private boolean autoOpenToHalfOpenEnabled;
+    private int retryMaxAttempts;
+    private long retryWaitDurationSeconds;
+    private boolean retryEnabled;
+    
+    // Custom setters with @JsonProperty for kebab-case YAML properties
+    
+    @JsonProperty("failure-rate-threshold")
+    public void setFailureRateThreshold(float failureRateThreshold) {
+        this.failureRateThreshold = failureRateThreshold;
+    }
+    
+    @JsonProperty("wait-duration-in-open-state")
+    public void setWaitDurationInOpenState(long waitDurationInOpenState) {
+        this.waitDurationInOpenStatesseconds = waitDurationInOpenState;
+    }
+    
+    @JsonProperty("sliding-window-size")
+    public void setSlidingWindowSize(int slidingWindowSize) {
+        this.slidingWindowSize = slidingWindowSize;
+    }
+    
+    @JsonProperty("sliding-window-type")
+    public void setSlidingWindowType(String slidingWindowType) {
+        this.slidingWindowType = slidingWindowType;
+    }
+    
+    @JsonProperty("permitted-calls-in-half-open-state")
+    public void setPermittedCallsInHalfOpenState(int permittedCallsInHalfOpenState) {
+        this.permittedCallsInHalfOpenState = permittedCallsInHalfOpenState;
+    }
+    
+    @JsonProperty("auto-open-to-half-open-enabled")
+    public void setAutoOpenToHalfOpenEnabled(boolean autoOpenToHalfOpenEnabled) {
+        this.autoOpenToHalfOpenEnabled = autoOpenToHalfOpenEnabled;
+    }
+    
+    @JsonProperty("retry-max-attempts")
+    public void setRetryMaxAttempts(int retryMaxAttempts) {
+        this.retryMaxAttempts = retryMaxAttempts;
+    }
+    
+    @JsonProperty("retry-wait-duration-seconds")
+    public void setRetryWaitDurationSeconds(long retryWaitDurationSeconds) {
+        this.retryWaitDurationSeconds = retryWaitDurationSeconds;
+    }
+    
+    @JsonProperty("retry-enabled")
+    public void setRetryEnabled(boolean retryEnabled) {
+        this.retryEnabled = retryEnabled;
+    }
+}
+```
+
+3. Updated ResilienceConfigProperties.java
+
+```java
+package com.rogers.api.config;
+
+import com.rogers.api.model.ResilienceService;
+import lombok.Data;
+import org.springframework.boot.context.properties.ConfigurationProperties;
+import org.springframework.context.annotation.Configuration;
+
+import java.util.HashMap;
+import java.util.Map;
+
+@Configuration
+@ConfigurationProperties(prefix = "application.resilience.circuit-breaker")
+@Data
+public class ResilienceConfigProperties {
+    
+    private Map<String, ResilienceService> services = new HashMap<>();
+
+    public ResilienceService getConfigForService(String serviceName) {
+        ResilienceService config = services.get(serviceName);
+        if (config == null) {
+            throw new IllegalArgumentException(
+                String.format("No resilience configuration found for service: %s", serviceName)
+            );
+        }
+        return config;
+    }
+    
+    public boolean hasServiceConfig(String serviceName) {
+        return services.containsKey(serviceName);
+    }
+    
+    public void validateAllServicesConfigured() {
+        for (ApiServiceEnum service : ApiServiceEnum.values()) {
+            String serviceName = service.getServiceName();
+            if (!hasServiceConfig(serviceName)) {
+                throw new IllegalStateException(
+                    String.format("Missing resilience configuration for service: %s", serviceName)
+                );
+            }
+        }
+    }
+}
+```
+
+4. Add Jackson Dependency to pom.xml
+
+```xml
+<dependency>
+    <groupId>com.fasterxml.jackson.core</groupId>
+    <artifactId>jackson-databind</artifactId>
+    <version>2.15.2</version> <!-- Use the version compatible with your Spring Boot -->
+</dependency>
+```
+
+5. Circuit Breaker Configuration
+
+```java
+@Configuration
+public class ResilienceConfig {
+    
+    private final ResilienceConfigProperties configProperties;
+    
+    public ResilienceConfig(ResilienceConfigProperties configProperties) {
+        this.configProperties = configProperties;
+    }
+    
+    @Bean
+    public CircuitBreakerRegistry circuitBreakerRegistry() {
+        log.info("Initializing CircuitBreakerRegistry...");
+        
+        Map<String, CircuitBreakerConfig> serviceConfigs = new HashMap<>();
+        
+        for (ApiServiceEnum service : ApiServiceEnum.values()) {
+            String serviceName = service.getServiceName();
+            ResilienceService serviceConfig = configProperties.getConfigForService(serviceName);
+            
+            // Build circuit breaker config for this service
+            CircuitBreakerConfig cbConfig = CircuitBreakerConfig.custom()
+                .failureRateThreshold(serviceConfig.getFailureRateThreshold())
+                .waitDurationInOpenState(Duration.ofSeconds(serviceConfig.getWaitDurationInOpenStatesseconds()))
+                .slidingWindowSize(serviceConfig.getSlidingWindowSize())
+                .slidingWindowType(CircuitBreakerConfig.SlidingWindowType.valueOf(
+                    serviceConfig.getSlidingWindowType().toUpperCase()))
+                .permittedNumberOfCallsInHalfOpenState(serviceConfig.getPermittedCallsInHalfOpenState())
+                .automaticTransitionFromOpenToHalfOpenEnabled(serviceConfig.isAutoOpenToHalfOpenEnabled())
+                .recordException(e -> e instanceof WebClientResponseException)
+                .build();
+            
+            serviceConfigs.put(serviceName, cbConfig);
+            
+            log.debug("Configured circuit breaker for {}: failureRateThreshold={}, waitDuration={}s",
+                serviceName, 
+                serviceConfig.getFailureRateThreshold(),
+                serviceConfig.getWaitDurationInOpenStatesseconds());
+        }
+        
+        CircuitBreakerRegistry registry = CircuitBreakerRegistry.of(serviceConfigs);
+        
+        // Register event listeners
+        registry.getEventPublisher()
+            .onEntryAdded(event -> registerStateListener(event.getAddedEntry()));
+        
+        log.info("CircuitBreakerRegistry initialized with {} services", serviceConfigs.size());
+        return registry;
+    }
+    
+    private void registerStateListener(CircuitBreaker circuitBreaker) {
+        circuitBreaker.getEventPublisher()
+            .onStateTransition(event -> {
+                log.info("CircuitBreaker [{}] transitioned from {} to {}", 
+                    circuitBreaker.getName(), event.getFromState(), event.getToState());
+            });
+    }
+    
+    @Bean
+    public RetryRegistry retryRegistry() {
+        log.info("Initializing RetryRegistry...");
+        
+        Map<String, RetryConfig> serviceConfigs = new HashMap<>();
+        
+        for (ApiServiceEnum service : ApiServiceEnum.values()) {
+            String serviceName = service.getServiceName();
+            ResilienceService serviceConfig = configProperties.getConfigForService(serviceName);
+            
+            if (serviceConfig.isRetryEnabled()) {
+                RetryConfig retryConfig = RetryConfig.custom()
+                    .maxAttempts(serviceConfig.getRetryMaxAttempts())
+                    .waitDuration(Duration.ofSeconds(serviceConfig.getRetryWaitDurationSeconds()))
+                    .ignoreExceptions(APIFailureException.class)
+                    .build();
+                
+                serviceConfigs.put(serviceName, retryConfig);
+                
+                log.debug("Configured retry for {}: maxAttempts={}, waitDuration={}s",
+                    serviceName,
+                    serviceConfig.getRetryMaxAttempts(),
+                    serviceConfig.getRetryWaitDurationSeconds());
+            }
+        }
+        
+        log.info("RetryRegistry initialized with {} services", serviceConfigs.size());
+        return RetryRegistry.of(serviceConfigs);
+    }
+}
+```
+
+6. ResilientServiceExecutor
+
+```java
+@Component
+public class ResilientServiceExecutor {
+    
+    private final CircuitBreakerRegistry circuitBreakerRegistry;
+    private final RetryRegistry retryRegistry;
+    private final ResilienceConfigProperties configProperties;
+    
+    private final Map<String, CircuitBreaker> circuitBreakerCache = new ConcurrentHashMap<>();
+    private final Map<String, Retry> retryCache = new ConcurrentHashMap<>();
+    
+    public ResilientServiceExecutor(CircuitBreakerRegistry circuitBreakerRegistry,
+                                   RetryRegistry retryRegistry,
+                                   ResilienceConfigProperties configProperties) {
+        this.circuitBreakerRegistry = circuitBreakerRegistry;
+        this.retryRegistry = retryRegistry;
+        this.configProperties = configProperties;
+    }
+    
+    public <T> T executeWithResilience(ApiServiceEnum service, Supplier<T> supplier) {
+        String serviceName = service.getServiceName();
+        
+        // Get service-specific configuration
+        ResilienceService serviceConfig = configProperties.getConfigForService(serviceName);
+        
+        // Get or create circuit breaker
+        CircuitBreaker cb = circuitBreakerCache.computeIfAbsent(
+            serviceName,
+            name -> circuitBreakerRegistry.circuitBreaker(name)
+        );
+        
+        Supplier<T> decoratedSupplier;
+        
+        if (serviceConfig.isRetryEnabled()) {
+            // Get or create retry
+            Retry retry = retryCache.computeIfAbsent(
+                serviceName,
+                name -> retryRegistry.retry(name)
+            );
+            
+            decoratedSupplier = CircuitBreaker.decorateSupplier(
+                cb, 
+                Retry.decorateSupplier(retry, supplier)
+            );
+        } else {
+            decoratedSupplier = CircuitBreaker.decorateSupplier(cb, supplier);
+        }
+        
+        return decoratedSupplier.get();
+    }
+    
+    public CircuitBreaker.State getServiceState(String serviceName) {
+        try {
+            CircuitBreaker cb = circuitBreakerCache.get(serviceName);
+            if (cb == null) {
+                cb = circuitBreakerRegistry.circuitBreaker(serviceName);
+                circuitBreakerCache.put(serviceName, cb);
+            }
+            return cb.getState();
+        } catch (Exception e) {
+            log.warn("Could not get state for service: {}", serviceName, e);
+            return CircuitBreaker.State.CLOSED;
+        }
+    }
+    
+    public Map<String, Object> getServiceConfigInfo(String serviceName) {
+        ResilienceService config = configProperties.getConfigForService(serviceName);
+        Map<String, Object> info = new HashMap<>();
+        
+        info.put("failureRateThreshold", config.getFailureRateThreshold());
+        info.put("waitDurationInOpenStatesseconds", config.getWaitDurationInOpenStatesseconds());
+        info.put("slidingWindowSize", config.getSlidingWindowSize());
+        info.put("slidingWindowType", config.getSlidingWindowType());
+        info.put("permittedCallsInHalfOpenState", config.getPermittedCallsInHalfOpenState());
+        info.put("autoOpenToHalfOpenEnabled", config.isAutoOpenToHalfOpenEnabled());
+        info.put("retryMaxAttempts", config.getRetryMaxAttempts());
+        info.put("retryWaitDurationSeconds", config.getRetryWaitDurationSeconds());
+        info.put("retryEnabled", config.isRetryEnabled());
+        
+        return info;
+    }
+}
+```
+
+7. Configuration Validator
+
+```java
+@Component
+public class ResilienceConfigValidator implements ApplicationRunner {
+    
+    private final ResilienceConfigProperties configProperties;
+    
+    public ResilienceConfigValidator(ResilienceConfigProperties configProperties) {
+        this.configProperties = configProperties;
+    }
+    
+    @Override
+    public void run(ApplicationArguments args) {
+        log.info("=== Resilience Configuration Validation ===");
+        
+        try {
+            configProperties.validateAllServicesConfigured();
+            
+            // Validate each service configuration
+            for (ApiServiceEnum service : ApiServiceEnum.values()) {
+                String serviceName = service.getServiceName();
+                ResilienceService config = configProperties.getConfigForService(serviceName);
+                
+                validateServiceConfig(serviceName, config);
+                
+                log.info("✓ Service [{}]:", serviceName);
+                log.info("    Circuit Breaker:");
+                log.info("      - failureRateThreshold: {}", config.getFailureRateThreshold());
+                log.info("      - waitDurationInOpenStatesseconds: {}", config.getWaitDurationInOpenStatesseconds());
+                log.info("      - slidingWindowSize: {}", config.getSlidingWindowSize());
+                log.info("      - slidingWindowType: {}", config.getSlidingWindowType());
+                log.info("      - permittedCallsInHalfOpenState: {}", config.getPermittedCallsInHalfOpenState());
+                log.info("      - autoOpenToHalfOpenEnabled: {}", config.isAutoOpenToHalfOpenEnabled());
+                log.info("    Retry:");
+                log.info("      - retryEnabled: {}", config.isRetryEnabled());
+                log.info("      - retryMaxAttempts: {}", config.getRetryMaxAttempts());
+                log.info("      - retryWaitDurationSeconds: {}", config.getRetryWaitDurationSeconds());
+            }
+            
+            log.info("✓ All {} services have valid resilience configurations", 
+                ApiServiceEnum.values().length);
+            
+        } catch (Exception e) {
+            log.error("✗ Resilience configuration validation failed", e);
+            throw e;
+        }
+    }
+    
+    private void validateServiceConfig(String serviceName, ResilienceService config) {
+        if (config.getFailureRateThreshold() <= 0 || config.getFailureRateThreshold() > 100) {
+            throw new IllegalStateException(
+                String.format("Invalid failureRateThreshold for service %s: %s", 
+                    serviceName, config.getFailureRateThreshold())
+            );
+        }
+        
+        if (config.getWaitDurationInOpenStatesseconds() <= 0) {
+            throw new IllegalStateException(
+                String.format("Invalid waitDurationInOpenStatesseconds for service %s: %s", 
+                    serviceName, config.getWaitDurationInOpenStatesseconds())
+            );
+        }
+        
+        if (config.getSlidingWindowSize() <= 0) {
+            throw new IllegalStateException(
+                String.format("Invalid slidingWindowSize for service %s: %s", 
+                    serviceName, config.getSlidingWindowSize())
+            );
+        }
+        
+        if (!config.getSlidingWindowType().equals("COUNT_BASED") && 
+            !config.getSlidingWindowType().equals("TIME_BASED")) {
+            throw new IllegalStateException(
+                String.format("Invalid slidingWindowType for service %s: %s. Must be COUNT_BASED or TIME_BASED", 
+                    serviceName, config.getSlidingWindowType())
+            );
+        }
+    }
+}
+```
+
+8. Debug Endpoint to Verify Mapping
+
+```java
+@RestController
+@RequestMapping("/api/debug/resilience")
+public class ResilienceDebugController {
+    
+    private final ResilienceConfigProperties configProperties;
+    private final ResilientServiceExecutor executor;
+    
+    public ResilienceDebugController(ResilienceConfigProperties configProperties,
+                                   ResilientServiceExecutor executor) {
+        this.configProperties = configProperties;
+        this.executor = executor;
+    }
+    
+    @GetMapping("/config/mapping")
+    public Map<String, Object> showConfigMapping() {
+        Map<String, Object> result = new HashMap<>();
+        
+        for (ApiServiceEnum service : ApiServiceEnum.values()) {
+            String serviceName = service.getServiceName();
+            
+            Map<String, Object> serviceInfo = new HashMap<>();
+            serviceInfo.put("config", configProperties.getConfigForService(serviceName));
+            serviceInfo.put("currentState", executor.getServiceState(serviceName));
+            
+            result.put(serviceName, serviceInfo);
+        }
+        
+        return result;
+    }
+    
+    @GetMapping(
