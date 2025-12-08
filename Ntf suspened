@@ -1,0 +1,631 @@
+Complete Implementation with Single Query
+
+1. Template Entity (Template.java)
+
+```java
+package com.example.entities;
+
+import jakarta.persistence.*;
+import lombok.Data;
+import lombok.AllArgsConstructor;
+import lombok.NoArgsConstructor;
+import lombok.Builder;
+import java.time.OffsetDateTime;
+
+@Data
+@Builder
+@NoArgsConstructor
+@AllArgsConstructor
+@Entity
+@Table(name = "ense_template")
+public class Template {
+    
+    @Id
+    @GeneratedValue(strategy = GenerationType.IDENTITY)
+    @Column(name = "id", nullable = false)
+    private Long id;
+    
+    @Column(name = "notification_template_code")
+    private String notificationTemplateCode;
+    
+    @Column(name = "external_template_code")
+    private String externalTemplateCode;
+    
+    @Column(name = "template_type")
+    private String templateType;
+    
+    @Column(name = "category")
+    private String category;
+    
+    @Column(name = "language")
+    private String language;
+    
+    @Column(name = "delivery_method")
+    private String deliveryMethod;
+    
+    @Column(name = "status")
+    private String status;
+    
+    @Column(name = "template_format")
+    private String templateFormat;
+    
+    @Column(name = "is_local_template")
+    private Boolean isLocalTemplate;
+    
+    @Column(name = "pdf_process_required")
+    private Boolean pdfProcessRequired;
+    
+    @Column(name = "default_encoding_type")
+    private String encodingType;
+    
+    @Column(name = "default_short_code_id")
+    private Integer defaultShortCodeId;
+    
+    @Column(name = "supported_franchise")
+    private String supportedFranchise;
+    
+    @Column(name = "notes")
+    private String description;
+    
+    @Column(name = "retention_flag")
+    private Boolean retentionFlag;
+    
+    @Column(name = "archival_days")
+    private Long retentionDays;
+    
+    @Column(name = "legal_hours_compliance")
+    private Boolean legalHoursCompliance;
+    
+    @Column(name = "is_purging_required")
+    private Boolean purgingRequired;
+    
+    @Column(name = "authorization_category")
+    private String authorizationCategory;
+    
+    @Column(name = "current_template_version")
+    private Integer currentTemplateVersion;
+    
+    @Column(name = "default_priority")
+    private String defaultPriority;
+    
+    @Column(name = "created_on")
+    private OffsetDateTime createdOn;
+    
+    @Column(name = "created_by")
+    private String createdBy;
+    
+    @Column(name = "modified_on")
+    private OffsetDateTime modifiedOn;
+    
+    @Column(name = "modified_by")
+    private String modifiedBy;
+}
+```
+
+2. SuspendedTemplate Entity (SuspendedTemplate.java)
+
+```java
+package com.example.entities;
+
+import jakarta.persistence.*;
+import lombok.Data;
+import java.time.OffsetDateTime;
+
+@Data
+@Entity
+@Table(name = "ENSC_NTF_TEMPLATE_SUSPENDED")
+public class SuspendedTemplate {
+    
+    @Id
+    @GeneratedValue(strategy = GenerationType.IDENTITY)
+    private Long id;
+    
+    @Column(name = "NOTIFICATION_ID")
+    private Long notificationId;
+    
+    @Column(name = "TEMPLATE_ID")
+    private Long templateId;
+    
+    @Column(name = "NOTIFICATION_TEMPLATE_CODE")
+    private String notificationTemplateCode;
+    
+    @Column(name = "STATUS")
+    private String status;
+    
+    @Column(name = "DELIVERY_METHOD")
+    private String deliveryMethod;
+    
+    @Column(name = "MODIFIED_ON")
+    private OffsetDateTime modifiedOn;
+    
+    @Column(name = "CREATED_ON")
+    private OffsetDateTime createdOn;
+    
+    // If you need the relationship, but it's not required for the single query
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(
+        name = "TEMPLATE_ID", 
+        referencedColumnName = "ID",
+        insertable = false,
+        updatable = false
+    )
+    private Template template;
+}
+```
+
+3. Template Repository (Simplified) (TemplateRepository.java)
+
+```java
+package com.example.repositories;
+
+import com.example.entities.Template;
+import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.stereotype.Repository;
+
+@Repository
+public interface TemplateRepository extends JpaRepository<Template, Long> {
+    // No custom methods needed - we'll use the single query approach
+}
+```
+
+4. SuspendedTemplate Repository with Single Query (SuspendedTemplateRepository.java)
+
+```java
+package com.example.repositories;
+
+import com.example.entities.SuspendedTemplate;
+import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Query;
+import org.springframework.data.repository.query.Param;
+import org.springframework.stereotype.Repository;
+import java.util.List;
+
+@Repository
+public interface SuspendedTemplateRepository extends JpaRepository<SuspendedTemplate, Long> {
+
+    /**
+     * Single Query that:
+     * 1. Takes template IDs from ENSC_NTF_TEMPLATE_SUSPENDED table
+     * 2. Checks those template IDs have "ACTIVE" status in ense_template table
+     * 3. Fetches records with "DRAFT" status and given delivery method
+     * 4. Uses DISTINCT to avoid duplicate template IDs
+     * 5. Uses FOR UPDATE SKIP LOCKED for thread safety
+     * 6. Supports pagination
+     */
+    @Query(value = """
+        SELECT DISTINCT st.*
+        FROM ENSC_NTF_TEMPLATE_SUSPENDED st
+        WHERE st.STATUS = :draftStatus
+        AND st.DELIVERY_METHOD = :deliveryMethod
+        AND EXISTS (
+            SELECT 1 
+            FROM ense_template t 
+            WHERE t.id = st.TEMPLATE_ID 
+            AND t.status = :activeStatus
+            AND t.delivery_method = :deliveryMethod
+        )
+        ORDER BY st.ID
+        OFFSET :offset ROWS
+        FETCH NEXT :pageSize ROWS ONLY
+        FOR UPDATE SKIP LOCKED
+        """, nativeQuery = true)
+    List<SuspendedTemplate> findSuspendedTemplatesForActivation(
+        @Param("draftStatus") String draftStatus,
+        @Param("deliveryMethod") String deliveryMethod,
+        @Param("activeStatus") String activeStatus,
+        @Param("offset") long offset,
+        @Param("pageSize") int pageSize);
+    
+    /**
+     * Alternative: Without DISTINCT if you want all records
+     */
+    @Query(value = """
+        SELECT st.*
+        FROM ENSC_NTF_TEMPLATE_SUSPENDED st
+        INNER JOIN ense_template t ON st.TEMPLATE_ID = t.id
+        WHERE st.STATUS = :draftStatus
+        AND st.DELIVERY_METHOD = :deliveryMethod
+        AND t.status = :activeStatus
+        ORDER BY st.ID
+        OFFSET :offset ROWS
+        FETCH NEXT :pageSize ROWS ONLY
+        FOR UPDATE SKIP LOCKED
+        """, nativeQuery = true)
+    List<SuspendedTemplate> findSuspendedTemplatesForActivationAll(
+        @Param("draftStatus") String draftStatus,
+        @Param("deliveryMethod") String deliveryMethod,
+        @Param("activeStatus") String activeStatus,
+        @Param("offset") long offset,
+        @Param("pageSize") int pageSize);
+}
+```
+
+5. Template Activation Service (TemplateActivationService.java)
+
+```java
+package com.example.services;
+
+import com.example.entities.SuspendedTemplate;
+import com.example.repositories.SuspendedTemplateRepository;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+import java.time.OffsetDateTime;
+import java.util.List;
+
+@Service
+@Transactional
+public class TemplateActivationService {
+    
+    private final SuspendedTemplateRepository suspendedTemplateRepository;
+    
+    // Status constants
+    private static final String DRAFT_STATUS = "DRAFT";
+    private static final String ACTIVE_STATUS = "ACTIVE";
+    private static final String IN_PROGRESS_STATUS = "IN_PROGRESS";
+    private static final String ACTIVATED_STATUS = "ACTIVATED";
+    private static final String FAILED_STATUS = "FAILED";
+    
+    public TemplateActivationService(SuspendedTemplateRepository suspendedTemplateRepository) {
+        this.suspendedTemplateRepository = suspendedTemplateRepository;
+    }
+    
+    /**
+     * Main method to fetch and reserve suspended templates for activation
+     * This implements the exact requirement:
+     * 1. Take template IDs from ENSC_NTF_TEMPLATE_SUSPENDED table
+     * 2. Check those template IDs have "ACTIVE" status in ense_template table
+     * 3. Fetch records with "DRAFT" status and given delivery method
+     * 4. Reserve them by updating status to "IN_PROGRESS"
+     */
+    public List<SuspendedTemplate> fetchAndReserveSuspendedTemplates(
+            String deliveryMethod, 
+            int pageNumber, 
+            int pageSize) {
+        
+        // Calculate offset for pagination
+        long offset = (long) pageNumber * pageSize;
+        
+        // Execute the single query to get eligible suspended templates
+        List<SuspendedTemplate> eligibleTemplates = suspendedTemplateRepository
+            .findSuspendedTemplatesForActivation(
+                DRAFT_STATUS,
+                deliveryMethod,
+                ACTIVE_STATUS,
+                offset,
+                pageSize
+            );
+        
+        if (eligibleTemplates.isEmpty()) {
+            return List.of();
+        }
+        
+        // Reserve the templates by updating their status
+        reserveTemplates(eligibleTemplates);
+        
+        return eligibleTemplates;
+    }
+    
+    /**
+     * Reserve templates by updating their status to IN_PROGRESS
+     * This prevents other threads from processing the same templates
+     */
+    private void reserveTemplates(List<SuspendedTemplate> templates) {
+        OffsetDateTime now = OffsetDateTime.now();
+        
+        for (SuspendedTemplate template : templates) {
+            template.setStatus(IN_PROGRESS_STATUS);
+            template.setModifiedOn(now);
+        }
+        
+        // Save all changes in one batch
+        suspendedTemplateRepository.saveAll(templates);
+    }
+    
+    /**
+     * Complete the activation for a template
+     * Call this after successful processing
+     */
+    public void completeActivation(Long suspendedTemplateId) {
+        suspendedTemplateRepository.findById(suspendedTemplateId)
+            .ifPresent(template -> {
+                template.setStatus(ACTIVATED_STATUS);
+                template.setModifiedOn(OffsetDateTime.now());
+                suspendedTemplateRepository.save(template);
+            });
+    }
+    
+    /**
+     * Batch completion for multiple templates
+     */
+    public void completeActivations(List<Long> suspendedTemplateIds) {
+        List<SuspendedTemplate> templates = suspendedTemplateRepository
+            .findAllById(suspendedTemplateIds);
+        
+        if (!templates.isEmpty()) {
+            OffsetDateTime now = OffsetDateTime.now();
+            templates.forEach(template -> {
+                template.setStatus(ACTIVATED_STATUS);
+                template.setModifiedOn(now);
+            });
+            suspendedTemplateRepository.saveAll(templates);
+        }
+    }
+    
+    /**
+     * Mark activation as failed
+     */
+    public void markActivationFailed(Long suspendedTemplateId, String errorMessage) {
+        suspendedTemplateRepository.findById(suspendedTemplateId)
+            .ifPresent(template -> {
+                template.setStatus(FAILED_STATUS);
+                template.setModifiedOn(OffsetDateTime.now());
+                // You could add error message to a separate field if needed
+                suspendedTemplateRepository.save(template);
+            });
+    }
+    
+    /**
+     * Reset a template back to DRAFT status (for retry)
+     */
+    public void resetToDraft(Long suspendedTemplateId) {
+        suspendedTemplateRepository.findById(suspendedTemplateId)
+            .ifPresent(template -> {
+                template.setStatus(DRAFT_STATUS);
+                template.setModifiedOn(OffsetDateTime.now());
+                suspendedTemplateRepository.save(template);
+            });
+    }
+    
+    /**
+     * Get count of eligible templates for a delivery method
+     * (Optional - for monitoring/planning)
+     */
+    public long countEligibleTemplates(String deliveryMethod) {
+        // This would need a separate count query
+        // For simplicity, we're not implementing it here
+        return 0;
+    }
+}
+```
+
+6. Template Activation Job (TemplateActivationJob.java)
+
+```java
+package com.example.jobs;
+
+import com.example.entities.SuspendedTemplate;
+import com.example.services.TemplateActivationService;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.scheduling.annotation.Scheduled;
+import org.springframework.stereotype.Component;
+import java.util.List;
+
+@Component
+public class TemplateActivationJob {
+    
+    private static final Logger logger = LoggerFactory.getLogger(TemplateActivationJob.class);
+    
+    private final TemplateActivationService activationService;
+    
+    public TemplateActivationJob(TemplateActivationService activationService) {
+        this.activationService = activationService;
+    }
+    
+    /**
+     * Scheduled job to process suspended templates
+     * Runs every 5 minutes
+     */
+    @Scheduled(fixedDelay = 300000) // 5 minutes in milliseconds
+    public void processSuspendedTemplates() {
+        logger.info("Starting suspended template activation job");
+        
+        // Define delivery methods to process
+        String[] deliveryMethods = {"SMS", "EMAIL", "PUSH", "WHATSAPP"};
+        
+        for (String deliveryMethod : deliveryMethods) {
+            try {
+                processDeliveryMethod(deliveryMethod);
+            } catch (Exception e) {
+                logger.error("Error processing delivery method {}: {}", deliveryMethod, e.getMessage(), e);
+            }
+        }
+        
+        logger.info("Completed suspended template activation job");
+    }
+    
+    /**
+     * Process templates for a specific delivery method
+     */
+    private void processDeliveryMethod(String deliveryMethod) {
+        int pageNumber = 0;
+        int pageSize = 100;
+        boolean hasMoreRecords = true;
+        
+        while (hasMoreRecords) {
+            // Fetch and reserve a batch of templates
+            List<SuspendedTemplate> templates = activationService
+                .fetchAndReserveSuspendedTemplates(deliveryMethod, pageNumber, pageSize);
+            
+            if (templates.isEmpty()) {
+                hasMoreRecords = false;
+                logger.info("No more templates to process for delivery method: {}", deliveryMethod);
+                break;
+            }
+            
+            logger.info("Processing {} templates for delivery method: {}", 
+                templates.size(), deliveryMethod);
+            
+            // Process each template
+            for (SuspendedTemplate template : templates) {
+                try {
+                    // Your activation logic here
+                    boolean success = activateTemplate(template);
+                    
+                    if (success) {
+                        activationService.completeActivation(template.getId());
+                        logger.info("Successfully activated template ID: {}", template.getId());
+                    } else {
+                        activationService.markActivationFailed(
+                            template.getId(), 
+                            "Activation failed"
+                        );
+                        logger.warn("Failed to activate template ID: {}", template.getId());
+                    }
+                } catch (Exception e) {
+                    activationService.markActivationFailed(
+                        template.getId(), 
+                        "Error: " + e.getMessage()
+                    );
+                    logger.error("Error activating template ID {}: {}", 
+                        template.getId(), e.getMessage(), e);
+                }
+            }
+            
+            pageNumber++;
+            
+            // Optional: Add delay between batches to prevent overwhelming the system
+            try {
+                Thread.sleep(1000); // 1 second delay
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                break;
+            }
+        }
+    }
+    
+    /**
+     * Your actual template activation logic
+     */
+    private boolean activateTemplate(SuspendedTemplate template) {
+        // Implement your business logic here
+        // This could involve:
+        // 1. Calling external APIs
+        // 2. Updating databases
+        // 3. Sending notifications
+        // 4. Any other processing required
+        
+        try {
+            // Example logic
+            logger.debug("Activating template: {}", template.getNotificationTemplateCode());
+            
+            // Simulate processing
+            Thread.sleep(100);
+            
+            // Return true if successful
+            return true;
+        } catch (Exception e) {
+            logger.error("Error in template activation logic: {}", e.getMessage(), e);
+            return false;
+        }
+    }
+}
+```
+
+7. Application Configuration (ApplicationConfig.java)
+
+```java
+package com.example.config;
+
+import org.springframework.context.annotation.Configuration;
+import org.springframework.scheduling.annotation.EnableScheduling;
+import org.springframework.transaction.annotation.EnableTransactionManagement;
+
+@Configuration
+@EnableScheduling
+@EnableTransactionManagement
+public class ApplicationConfig {
+    // Configuration for scheduling and transactions
+}
+```
+
+8. Main Application (TemplateActivationApplication.java)
+
+```java
+package com.example;
+
+import org.springframework.boot.SpringApplication;
+import org.springframework.boot.autoconfigure.SpringBootApplication;
+
+@SpringBootApplication
+public class TemplateActivationApplication {
+    public static void main(String[] args) {
+        SpringApplication.run(TemplateActivationApplication.class, args);
+    }
+}
+```
+
+9. Docker Compose (Optional - for PostgreSQL)
+
+```yaml
+version: '3.8'
+services:
+  postgres:
+    image: postgres:15
+    environment:
+      POSTGRES_DB: template_db
+      POSTGRES_USER: admin
+      POSTGRES_PASSWORD: password
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+volumes:
+  postgres_data:
+```
+
+10. Application Properties (application.properties)
+
+```properties
+# Database Configuration
+spring.datasource.url=jdbc:postgresql://localhost:5432/template_db
+spring.datasource.username=admin
+spring.datasource.password=password
+spring.datasource.driver-class-name=org.postgresql.Driver
+
+# JPA Configuration
+spring.jpa.hibernate.ddl-auto=update
+spring.jpa.show-sql=true
+spring.jpa.properties.hibernate.dialect=org.hibernate.dialect.PostgreSQLDialect
+spring.jpa.properties.hibernate.format_sql=true
+
+# Logging
+logging.level.com.example=DEBUG
+logging.level.org.springframework.transaction=INFO
+
+# Scheduling (if not using @Scheduled annotation)
+# spring.task.scheduling.pool.size=10
+```
+
+Key Features of This Complete Implementation:
+
+1. ✅ Single Query: Uses a single efficient SQL query that:
+   · Takes template IDs from suspended table
+   · Checks ACTIVE status in main template table
+   · Filters by DRAFT status and delivery method
+   · Uses DISTINCT to avoid duplicates
+   · Includes pagination
+   · Uses FOR UPDATE SKIP LOCKED for thread safety
+2. ✅ Complete Entity Classes: Full JPA entity mappings for both tables
+3. ✅ Service Layer: Contains all business logic for template activation
+4. ✅ Scheduled Job: Automated processing with configurable intervals
+5. ✅ Error Handling: Proper exception handling and status management
+6. ✅ Transaction Management: All database operations are transactional
+7. ✅ Thread Safety: Uses database-level locking to prevent race conditions
+8. ✅ Pagination Support: Handles large datasets efficiently
+
+Usage Example:
+
+```java
+// In your controller or another service:
+@RestController
+@RequestMapping("/api/templates")
+public class TemplateController {
+    
+    private final TemplateActivationService activationService;
+    
+    @PostMapping("/activate")
+    public ResponseEntity<String> activateTemplates(@RequestParam String deliveryMethod) {
+        List<SuspendedTemplate> activated = activationService
+            .fetchAndReserveSuspendedTe
