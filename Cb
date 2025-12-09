@@ -1408,3 +1408,45 @@ public class CommonServiceUtil {
     }
     
     public String callServiceWithResilience(String serviceNa
+
+protected <T> T executeWithCB(NotificationContext ctx, ApiServiceEnum apiService, Supplier<T> supplier) {
+    String serviceName = apiService.getServiceName();
+    try {
+        ResilienceService serviceConfig = resilienceConfigParameters.getConfigForService(serviceName);
+        
+        // Log the configuration being retrieved
+        log.debug("Retrieving CircuitBreaker for service: {}", serviceName);
+        
+        CircuitBreaker cb = circuitBreakerRegistry.circuitBreaker(serviceName);
+        
+        // Log the CircuitBreaker instance details
+        logCircuitBreakerDetails(cb, serviceName, serviceConfig);
+        
+        // Rest of the code...
+    } catch (Exception e) {
+        // Error handling
+    }
+}
+
+private void logCircuitBreakerDetails(CircuitBreaker cb, String serviceName, ResilienceService serviceConfig) {
+    // Check if we got the right configuration
+    Optional<CircuitBreakerConfig> config = circuitBreakerRegistry.getConfiguration(serviceName);
+    
+    if (config.isPresent()) {
+        CircuitBreakerConfig actualConfig = config.get();
+        log.info("CircuitBreaker for {} using configuration: failureRateThreshold={}, waitDuration={}s, slidingWindowSize={}",
+            serviceName,
+            actualConfig.getFailureRateThreshold(),
+            actualConfig.getWaitDurationInOpenState().getSeconds(),
+            actualConfig.getSlidingWindowSize()
+        );
+        
+        // Compare with expected values from your config
+        log.info("Expected config from properties: failureRateThreshold={}, waitDuration={}s",
+            serviceConfig.getFailureRateThreshold(),
+            serviceConfig.getWaitDurationInOpenState()
+        );
+    } else {
+        log.warn("No specific configuration found for service: {}, using default", serviceName);
+    }
+}
