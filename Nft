@@ -1,0 +1,522 @@
+Yes, absolutely! Using DISTINCT on the template IDs from the suspended table first is an excellent optimization strategy. This reduces the number of queries to the main template table significantly. Here's the optimized approach:
+
+1. SuspendedTemplate Repository (Optimized with DISTINCT)
+
+```java
+import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Modifying;
+import org.springframework.data.jpa.repository.Query;
+import org.springframework.data.repository.query.Param;
+import org.springframework.stereotype.Repository;
+import java.util.List;
+
+@Repository
+public interface SuspendedTemplateRepository extends JpaRepository<SuspendedTemplate, Long> {
+
+    /**
+     * STEP 1: Get DISTINCT template IDs from suspended table
+     * with DRAFT status and given delivery method
+     */
+    @Query(value = """
+        SELECT DISTINCT st.TEMPLATE_ID
+        FROM ENSC_NTF_TEMPLATE_SUSPENDED st
+        WHERE st.STATUS = 'DRAFT'
+        AND st.DELIVERY_METHOD = :deliveryMethod
+        ORDER BY st.TEMPLATE_ID
+        OFFSET :offset ROWS
+        FETCH NEXT :pageSize ROWS ONLY
+        """, nativeQuery = true)
+    List<Long> findDistinctDraftTemplateIds(
+        @Param("deliveryMethod") String deliveryMethod,
+        @Param("offset") long offset,
+        @Param("pageSize") int pageSize);
+
+    /**
+     * STEP 2: After filtering active template IDs,
+     * fetch suspended records for those active template IDs
+     */
+    @Query(value = """
+        SELECT st.*
+        FROM ENSC_NTF_TEMPLATE_SUSPENDED st
+        WHERE st.STATUS = 'DRAFT'
+        AND st.DELIVERY_METHOD = :deliveryMethod
+        AND st.TEMPLATE_ID IN (:activeTemplateIds)
+        ORDER BY st.ID
+        FOR UPDATE SKIP LOCKED
+        """, nativeQuery = true)
+    List<SuspendedTemplate> findSuspendedByActiveTemplateIds(
+        @Param("deliveryMethod") String deliveryMethod,
+        @Param("activeTemplateIds") List<Long> activeTemplateIds);
+
+    /**
+     * Alternative: Fetch with pagination
+     */
+    @Query(value = """
+        SELECT st.*
+        FROM ENSC_NTF_TEMPLATE_SUSPENDED st
+        WHERE st.STATUS = 'DRAFT'
+        AND st.DELIVERY_METHOD = :deliveryMethod
+        AND st.TEMPLATE_ID IN (:activeTemplateIds)
+        ORDER BY st.ID
+        OFFSET :offset ROWS
+        FETCH NEXT :pageSize ROWS ONLY
+        FOR UPDATE SKIP LOCKED
+        """, nativeQuery = true)
+    List<SuspendedTemplate> findSuspendedByActiveTemplateIdsWithPagination(
+        @Param("deliveryMethod") String deliveryMethod,
+        @Param("activeTemplateIds") List<Long> activeTemplateIds,
+        @Param("offset") long offset,
+        @Param("pageSize") int pageSize);
+
+    /**
+     * Update status for reserved templates
+     */
+    @Modifying
+    @Query(value = """
+        UPDATE ENSC_NTF_TEMPLATE_SUSPENDED
+        SET STATUS = 'IN_PROGRESS',
+            MODIFIED_ON = CURRENT_TIMESTAMP
+        WHERE ID IN (:ids)
+        AND STATUS = 'DRAFT'
+        """, nativeQuery = true)
+    int reserveTemplates(@Param("ids") List<Long> ids);
+
+    /**
+     * Count distinct draft template IDs
+     */
+    @Query(value = """
+        SELECT COUNT(DISTINCT TEMPLATE_ID)
+        FROM ENSC_NTF_TEMPLATE_SUSPENDED
+        WHERE STATUS = 'DRAFT'
+        AND DELIVERY_METHOD = :deliveryMethod
+        """, nativeQuery = true)
+    long countDistinctDraftTemplateIds(@Param("deliveryMethod") String deliveryMethod);
+}
+```
+
+2. Template Repository (Minimal)
+
+```java
+import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Query;
+import org.springframework.data.repository.query.Param;
+import org.springframework.stereotype.Repository;
+import java.util.List;
+
+@Repository
+public interface TemplateRepository extends JpaRepository<Template, Long> {
+
+    /**
+     * Check which template IDs are ACTIVE
+     * This query is now much smaller because we only check DISTINCT IDs
+     */
+    @Query(value = """
+        SELECT id
+        FROM ense_template
+        WHERE id IN (:templateIds)
+        AND status = 'ACTIVE'
+        """, nativeQuery = true)
+    List<Long> findActiveTemplateIds(@Param("templateIds") List<Long> templateIds);
+    
+    /**
+     * Batch check with additional filters if needed
+     */
+    @Query(value = """
+        SELECT id, status, delivery_method
+        FROM ense_template
+        WHERE id IN (:templateIds)
+        AND status = 'ACTIVE'
+        AND delivery_method = :deliveryMethod
+        """, nativeQuery = true)
+    List<Object[]> findActiveTemplateDetails(
+        @Param("templateIds") List<Long> templateIds,
+        @Param("deliveryMethod") String deliveryMethod);
+}
+```
+
+3. Optimized Template Activation Service (3-Step Process)
+
+```java
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+import java.time.OffsetDateTime;
+import java.util.*;
+import java.util.stream.Collectors;
+
+@Service
+@Transactional
+public class OptimizedTemplateActivationService {
+    
+    private final SuspendedTemplateRepository suspendedTemplateRepository;
+    private final TemplateRepository templateRepository;
+    
+    // Configuration
+    private static final int DISTINCT_TEMPLATE_BATCH_SIZE = 1000;  // Get 1000 distinct template IDs at once
+    private static final int TEMPLATE_CHECK_BATCH_SIZE = 500;      // Check 500 IDs at once against main table
+    private static final int SUSPENDED_FETCH_BATCH_SIZE = 100;     // Fetch 100 suspended records at once
+    
+    public OptimizedTemplateActivationService(
+            SuspendedTemplateRepository suspendedTemplateRepository,
+            TemplateRepository templateRepository) {
+        this.suspendedTemplateRepository = suspendedTemplateRepository;
+        this.templateRepository = templateRepository;
+    }
+    
+    /**
+     * OPTIMIZED 3-STEP PROCESS:
+     * 1. Get DISTINCT template IDs from suspended table (DRAFT + delivery method)
+     * 2. Check which of these are ACTIVE in main template table
+     * 3. Fetch suspended records only for ACTIVE template IDs
+     */
+    public ActivationResult fetchAndReserveSuspendedTemplates(
+            String deliveryMethod, 
+            int maxDistinctTemplates) {
+        
+        ActivationResult result = new ActivationResult();
+        result.setDeliveryMethod(deliveryMethod);
+        
+        // STEP 1: Get DISTINCT template IDs from suspended table
+        List<Long> distinctTemplateIds = getDistinctTemplateIds(deliveryMethod, maxDistinctTemplates);
+        
+        if (distinctTemplateIds.isEmpty()) {
+            result.setMessage("No distinct template IDs found");
+            return result;
+        }
+        
+        result.setDistinctTemplateCount(distinctTemplateIds.size());
+        
+        // STEP 2: Check which template IDs are ACTIVE in main table
+        List<Long> activeTemplateIds = filterActiveTemplateIds(distinctTemplateIds);
+        
+        if (activeTemplateIds.isEmpty()) {
+            result.setMessage("No active templates found");
+            return result;
+        }
+        
+        result.setActiveTemplateCount(activeTemplateIds.size());
+        
+        // STEP 3: Fetch suspended records for ACTIVE template IDs
+        List<SuspendedTemplate> suspendedTemplates = fetchSuspendedForActiveTemplates(
+            deliveryMethod, activeTemplateIds);
+        
+        if (suspendedTemplates.isEmpty()) {
+            result.setMessage("No suspended records found for active templates");
+            return result;
+        }
+        
+        // Reserve the templates
+        List<SuspendedTemplate> reservedTemplates = reserveTemplates(suspendedTemplates);
+        
+        result.setReservedCount(reservedTemplates.size());
+        result.setReservedTemplates(reservedTemplates);
+        result.setSuccess(true);
+        result.setMessage("Successfully reserved " + reservedTemplates.size() + " templates");
+        
+        return result;
+    }
+    
+    /**
+     * STEP 1: Get DISTINCT template IDs from suspended table
+     */
+    private List<Long> getDistinctTemplateIds(String deliveryMethod, int maxCount) {
+        List<Long> allTemplateIds = new ArrayList<>();
+        int pageNumber = 0;
+        
+        while (allTemplateIds.size() < maxCount) {
+            long offset = (long) pageNumber * DISTINCT_TEMPLATE_BATCH_SIZE;
+            int pageSize = Math.min(DISTINCT_TEMPLATE_BATCH_SIZE, maxCount - allTemplateIds.size());
+            
+            List<Long> pageTemplateIds = suspendedTemplateRepository
+                .findDistinctDraftTemplateIds(deliveryMethod, offset, pageSize);
+            
+            if (pageTemplateIds.isEmpty()) {
+                break;
+            }
+            
+            allTemplateIds.addAll(pageTemplateIds);
+            pageNumber++;
+            
+            // Optional: Add small delay between batches
+            if (allTemplateIds.size() < maxCount && !pageTemplateIds.isEmpty()) {
+                try {
+                    Thread.sleep(10);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    break;
+                }
+            }
+        }
+        
+        return allTemplateIds;
+    }
+    
+    /**
+     * STEP 2: Filter to keep only ACTIVE template IDs
+     */
+    private List<Long> filterActiveTemplateIds(List<Long> templateIds) {
+        List<Long> activeTemplateIds = new ArrayList<>();
+        
+        // Process in batches to avoid huge IN clause
+        for (int i = 0; i < templateIds.size(); i += TEMPLATE_CHECK_BATCH_SIZE) {
+            int end = Math.min(templateIds.size(), i + TEMPLATE_CHECK_BATCH_SIZE);
+            List<Long> batch = templateIds.subList(i, end);
+            
+            List<Long> activeBatch = templateRepository.findActiveTemplateIds(batch);
+            activeTemplateIds.addAll(activeBatch);
+        }
+        
+        return activeTemplateIds;
+    }
+    
+    /**
+     * STEP 3: Fetch suspended records for ACTIVE template IDs
+     */
+    private List<SuspendedTemplate> fetchSuspendedForActiveTemplates(
+            String deliveryMethod, 
+            List<Long> activeTemplateIds) {
+        
+        List<SuspendedTemplate> allSuspendedTemplates = new ArrayList<>();
+        
+        // Process active template IDs in batches
+        for (int i = 0; i < activeTemplateIds.size(); i += SUSPENDED_FETCH_BATCH_SIZE) {
+            int end = Math.min(activeTemplateIds.size(), i + SUSPENDED_FETCH_BATCH_SIZE);
+            List<Long> batch = activeTemplateIds.subList(i, end);
+            
+            List<SuspendedTemplate> batchTemplates = suspendedTemplateRepository
+                .findSuspendedByActiveTemplateIds(deliveryMethod, batch);
+            
+            allSuspendedTemplates.addAll(batchTemplates);
+        }
+        
+        return allSuspendedTemplates;
+    }
+    
+    /**
+     * Reserve templates by updating their status
+     */
+    private List<SuspendedTemplate> reserveTemplates(List<SuspendedTemplate> templates) {
+        if (templates.isEmpty()) {
+            return Collections.emptyList();
+        }
+        
+        // Extract IDs
+        List<Long> templateIds = templates.stream()
+            .map(SuspendedTemplate::getId)
+            .collect(Collectors.toList());
+        
+        // Update status to IN_PROGRESS
+        int updatedCount = suspendedTemplateRepository.reserveTemplates(templateIds);
+        
+        if (updatedCount == templateIds.size()) {
+            // All were updated successfully
+            templates.forEach(t -> t.setStatus("IN_PROGRESS"));
+            return templates;
+        } else {
+            // Some might have been updated by another process
+            // Refetch to get the actual reserved ones
+            return suspendedTemplateRepository.findAllById(templateIds)
+                .stream()
+                .filter(t -> "IN_PROGRESS".equals(t.getStatus()))
+                .collect(Collectors.toList());
+        }
+    }
+    
+    /**
+     * Alternative: Process with pagination for very large datasets
+     */
+    public ActivationResult fetchAndReserveWithPagination(
+            String deliveryMethod,
+            int pageNumber,
+            int pageSize) {
+        
+        ActivationResult result = new ActivationResult();
+        result.setDeliveryMethod(deliveryMethod);
+        
+        // Step 1: Get DISTINCT template IDs for this page
+        long offset = (long) pageNumber * pageSize;
+        List<Long> distinctTemplateIds = suspendedTemplateRepository
+            .findDistinctDraftTemplateIds(deliveryMethod, offset, pageSize);
+        
+        if (distinctTemplateIds.isEmpty()) {
+            result.setMessage("Page " + pageNumber + " has no distinct template IDs");
+            return result;
+        }
+        
+        // Step 2: Filter active template IDs
+        List<Long> activeTemplateIds = filterActiveTemplateIds(distinctTemplateIds);
+        
+        if (activeTemplateIds.isEmpty()) {
+            result.setMessage("No active templates in this page");
+            return result;
+        }
+        
+        // Step 3: Fetch suspended records for active template IDs
+        List<SuspendedTemplate> suspendedTemplates = fetchSuspendedForActiveTemplates(
+            deliveryMethod, activeTemplateIds);
+        
+        if (suspendedTemplates.isEmpty()) {
+            result.setMessage("No suspended records for active templates in this page");
+            return result;
+        }
+        
+        // Reserve them
+        List<SuspendedTemplate> reservedTemplates = reserveTemplates(suspendedTemplates);
+        
+        result.setDistinctTemplateCount(distinctTemplateIds.size());
+        result.setActiveTemplateCount(activeTemplateIds.size());
+        result.setReservedCount(reservedTemplates.size());
+        result.setReservedTemplates(reservedTemplates);
+        result.setSuccess(true);
+        result.setMessage("Page " + pageNumber + ": Reserved " + reservedTemplates.size() + " templates");
+        
+        return result;
+    }
+    
+    /**
+     * Complete processing
+     */
+    @Transactional
+    public void completeProcessing(Long suspendedTemplateId) {
+        suspendedTemplateRepository.findById(suspendedTemplateId)
+            .ifPresent(template -> {
+                template.setStatus("ACTIVATED");
+                template.setModifiedOn(OffsetDateTime.now());
+                suspendedTemplateRepository.save(template);
+            });
+    }
+    
+    /**
+     * Get statistics
+     */
+    public Map<String, Object> getStatistics(String deliveryMethod) {
+        Map<String, Object> stats = new HashMap<>();
+        
+        long distinctCount = suspendedTemplateRepository
+            .countDistinctDraftTemplateIds(deliveryMethod);
+        stats.put("distinctDraftTemplates", distinctCount);
+        
+        // Estimate: Assuming 80% of templates are active
+        stats.put("estimatedActiveTemplates", (long) (distinctCount * 0.8));
+        stats.put("estimatedProcessingTimeMs", distinctCount * 50); // 50ms per template
+        
+        return stats;
+    }
+    
+    /**
+     * Result DTO
+     */
+    public static class ActivationResult {
+        private boolean success;
+        private String message;
+        private String deliveryMethod;
+        private int distinctTemplateCount;
+        private int activeTemplateCount;
+        private int reservedCount;
+        private List<SuspendedTemplate> reservedTemplates;
+        
+        // Getters and setters
+        public boolean isSuccess() { return success; }
+        public void setSuccess(boolean success) { this.success = success; }
+        
+        public String getMessage() { return message; }
+        public void setMessage(String message) { this.message = message; }
+        
+        public String getDeliveryMethod() { return deliveryMethod; }
+        public void setDeliveryMethod(String deliveryMethod) { this.deliveryMethod = deliveryMethod; }
+        
+        public int getDistinctTemplateCount() { return distinctTemplateCount; }
+        public void setDistinctTemplateCount(int distinctTemplateCount) { this.distinctTemplateCount = distinctTemplateCount; }
+        
+        public int getActiveTemplateCount() { return activeTemplateCount; }
+        public void setActiveTemplateCount(int activeTemplateCount) { this.activeTemplateCount = activeTemplateCount; }
+        
+        public int getReservedCount() { return reservedCount; }
+        public void setReservedCount(int reservedCount) { this.reservedCount = reservedCount; }
+        
+        public List<SuspendedTemplate> getReservedTemplates() { return reservedTemplates; }
+        public void setReservedTemplates(List<SuspendedTemplate> reservedTemplates) { this.reservedTemplates = reservedTemplates; }
+    }
+}
+```
+
+4. Batch Processor with DISTINCT Optimization
+
+```java
+import org.springframework.scheduling.annotation.Scheduled;
+import org.springframework.stereotype.Component;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import java.util.List;
+
+@Component
+public class DistinctTemplateProcessor {
+    
+    private static final Logger logger = LoggerFactory.getLogger(DistinctTemplateProcessor.class);
+    private final OptimizedTemplateActivationService activationService;
+    
+    // Configuration
+    private static final int MAX_DISTINCT_TEMPLATES_PER_RUN = 1000;
+    private static final int PAGE_SIZE = 100;
+    
+    public DistinctTemplateProcessor(OptimizedTemplateActivationService activationService) {
+        this.activationService = activationService;
+    }
+    
+    @Scheduled(fixedDelay = 300000) // 5 minutes
+    public void processWithDistinctOptimization() {
+        logger.info("Starting DISTINCT-optimized template processing");
+        
+        String[] deliveryMethods = {"SMS", "EMAIL", "PUSH", "WHATSAPP"};
+        
+        for (String deliveryMethod : deliveryMethods) {
+            long startTime = System.currentTimeMillis();
+            
+            // Get statistics first
+            var stats = activationService.getStatistics(deliveryMethod);
+            logger.info("Statistics for {}: {}", deliveryMethod, stats);
+            
+            // Process using DISTINCT optimization
+            var result = activationService.fetchAndReserveSuspendedTemplates(
+                deliveryMethod, MAX_DISTINCT_TEMPLATES_PER_RUN);
+            
+            long duration = System.currentTimeMillis() - startTime;
+            
+            if (result.isSuccess()) {
+                logger.info("Success for {}: {}", deliveryMethod, result.getMessage());
+                logger.info("Distinct templates: {}, Active: {}, Reserved: {}",
+                    result.getDistinctTemplateCount(),
+                    result.getActiveTemplateCount(),
+                    result.getReservedCount());
+                
+                // Process the reserved templates
+                processReservedTemplates(result.getReservedTemplates());
+            } else {
+                logger.info("No templates to process for {}: {}", deliveryMethod, result.getMessage());
+            }
+            
+            logger.info("Processing {} took {} ms", deliveryMethod, duration);
+        }
+    }
+    
+    /**
+     * Alternative: Paginated processing
+     */
+    @Scheduled(fixedDelay = 60000) // 1 minute
+    public void processPaginated() {
+        String[] deliveryMethods = {"SMS", "EMAIL"};
+        
+        for (String deliveryMethod : deliveryMethods) {
+            int pageNumber = 0;
+            boolean hasMore = true;
+            
+            while (hasMore) {
+                var result = activationService.fetchAndReserveWithPagination(
+                    deliveryMethod, pageNumber, PAGE_SIZE);
+                
+                if (result.getReservedCount() == 0) {
+                    hasMore = false;
+                    logger.info("Finished paginated processing for {}", deliveryMethod);
+                } else {
+                    logger.info("Page {} for {}: Reserved {} templates",
+                        pageNumber, deliveryMethod, result.getReservedCount());
+         
