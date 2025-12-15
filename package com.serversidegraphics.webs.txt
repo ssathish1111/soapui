@@ -1,4 +1,165 @@
-package com.serversidegraphics.webservices.pcs;
+You're right! The issue is that we're always creating fresh objects at every intermediate level, which means:
+
+1. First object in array: We create a fresh object, set its fields (maybe some are null/empty)
+2. Second object in array: We create ANOTHER fresh object, but this wipes out any existing structure
+
+The problem is in this part of the code:
+
+```java
+} else {
+    if (isArray) {
+        var arr = current.withArray(key);
+        ensureArraySize(arr, idx);
+        
+        // Always create fresh object for array elements
+        var obj = objectMapper.createObjectNode();
+        arr.set(idx, obj);
+        current = obj;
+    } else {
+        // Always create fresh object for non-array intermediate nodes
+        var freshObj = objectMapper.createObjectNode();
+        current.set(key, freshObj);
+        current = freshObj;
+    }
+}
+```
+
+This is overwriting the array element every time, even if it already exists with some values. We need to check if the array element already exists and is an object, and if so, reuse it instead of creating a new one.
+
+Here's the corrected version:
+
+```java
+protected void setValueInJson(ObjectNode root, String path, JsonNode value) {
+    var parts = path.split(PATH_DELIMITER);
+    var current = root;
+    
+    for (int i = 0; i < parts.length; i++) {
+        var p = parts[i];
+        if (p == null || p.isEmpty()) {
+            throw new CustomException("Invalid JSON path: Empty key detected in path '" + path + "'");
+        }
+        
+        var isArray = p.contains("[");
+        var key = isArray ? p.substring(0, p.indexOf("[")) : p;
+        
+        if (isArray) {
+            var idx = Integer.parseInt(p.substring(p.indexOf("[") + 1, p.indexOf("]")));
+            var arr = current.withArray(key);
+            ensureArraySize(arr, idx);
+            
+            if (i == parts.length - 1) {
+                // Last part - set the value
+                arr.set(idx, value);
+            } else {
+                // Intermediate array element
+                var next = arr.get(idx);
+                if (!next.isObject()) {
+                    // Create fresh object if it doesn't exist or isn't an object
+                    var obj = objectMapper.createObjectNode();
+                    arr.set(idx, obj);
+                    current = obj;
+                } else {
+                    // REUSE existing object
+                    current = (ObjectNode) next;
+                }
+            }
+        } else {
+            if (i == parts.length - 1) {
+                // Last part - set the value
+                current.set(key, value);
+            } else {
+                // Intermediate object
+                if (!current.has(key) || !current.get(key).isObject()) {
+                    // Create fresh object if it doesn't exist or isn't an object
+                    var freshObj = objectMapper.createObjectNode();
+                    current.set(key, freshObj);
+                    current = freshObj;
+                } else {
+                    // REUSE existing object
+                    current = (ObjectNode) current.get(key);
+                }
+            }
+        }
+    }
+}
+```
+
+Key changes:
+
+1. For array elements: Check if arr.get(idx) already exists and is an object. If yes, reuse it.
+2. For intermediate objects: Check if current.get(key) already exists and is an object. If yes, reuse it.
+
+Alternatively, here's a cleaner approach with better separation:
+
+```java
+protected void setValueInJson(ObjectNode root, String path, JsonNode value) {
+    var parts = path.split(PATH_DELIMITER);
+    var current = root;
+    
+    // Navigate to the parent object (all parts except last)
+    for (int i = 0; i < parts.length - 1; i++) {
+        current = getOrCreateNode(current, parts[i]);
+    }
+    
+    // Set the value at the final part
+    setValueAtFinalPart(current, parts[parts.length - 1], value);
+}
+
+private ObjectNode getOrCreateNode(ObjectNode current, String pathPart) {
+    var isArray = pathPart.contains("[");
+    var key = isArray ? pathPart.substring(0, pathPart.indexOf("[")) : pathPart;
+    
+    if (isArray) {
+        var idx = Integer.parseInt(pathPart.substring(pathPart.indexOf("[") + 1, pathPart.indexOf("]")));
+        var arr = current.withArray(key);
+        ensureArraySize(arr, idx);
+        
+        var next = arr.get(idx);
+        if (!next.isObject()) {
+            var obj = objectMapper.createObjectNode();
+            arr.set(idx, obj);
+            return obj;
+        }
+        return (ObjectNode) next;
+    } else {
+        if (!current.has(key) || !current.get(key).isObject()) {
+            var freshObj = objectMapper.createObjectNode();
+            current.set(key, freshObj);
+            return freshObj;
+        }
+        return (ObjectNode) current.get(key);
+    }
+}
+
+private void setValueAtFinalPart(ObjectNode parent, String pathPart, JsonNode value) {
+    var isArray = pathPart.contains("[");
+    var key = isArray ? pathPart.substring(0, pathPart.indexOf("[")) : pathPart;
+    
+    if (isArray) {
+        var idx = Integer.parseInt(pathPart.substring(pathPart.indexOf("[") + 1, pathPart.indexOf("]")));
+        var arr = parent.withArray(key);
+        ensureArraySize(arr, idx);
+        arr.set(idx, value);
+    } else {
+        parent.set(key, value);
+    }
+}
+```
+
+Why this works:
+
+· When setting the first field in array element 0, we create a new object
+· When setting the second field in the SAME array element 0, we find the existing object and reuse it
+· Each array element maintains its own state
+· Different array elements don't interfere with each other
+
+This way, you can have:
+
+· Array[0]: {fieldA: "value1", fieldB: "value2"}
+· Array[1]: {fieldA: "value3"} (fieldB will be null/absent)
+· Array[2]: {fieldB: "value4"} (fieldA will be null/absent)
+
+And each array element will only contain the fields that were specifically set for that element.package com.serversidegraphics.webservices.pcs;
 
 import javax.xml.bind.annotation.XmlElement;
 import javax.xml.bind.annotation.XmlRootElement;
@@ -1044,3 +1205,4 @@ public class JsonTransformerService {
   "java.import.gradle.annotationProcessingEnabled": true,
   "java.import.maven.annotationProcessingEnabled": true
 }
+
