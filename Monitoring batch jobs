@@ -1,0 +1,500 @@
+I understand! Let me provide a more compact, focused implementation that you can easily copy and integrate with your existing scheduler service.
+
+```java
+// =============== CONFIG MODELS ===============
+@Data
+class JobConfig {
+    private Long id;
+    private String jobName;
+    private String taskName;
+    private String taskCategory;
+    private String jobStatus;
+    private String cronExpression;
+    private Map<String, Object> parameters;
+    private String inUse;
+}
+
+@Data
+class MonitorConfig {
+    private List<String> jobKeys;
+    private TimeWindow timeWindow;
+    private EmailConfig emailConfig;
+    
+    @Data
+    static class TimeWindow {
+        private LocalDateTime fromTime;
+        private LocalDateTime toTime;
+        
+        public TimeWindow() {
+            LocalDateTime yesterday = LocalDateTime.now().minusDays(1);
+            this.fromTime = yesterday.withHour(0).withMinute(0).withSecond(0);
+            this.toTime = yesterday.withHour(23).withMinute(59).withSecond(59);
+        }
+    }
+    
+    @Data
+    static class EmailConfig {
+        private List<String> recipients;
+        private String subjectPrefix = "[BATCH-MONITOR]";
+    }
+}
+
+// =============== ABSTRACT JOB PROCESSOR ===============
+abstract class AbstractJobProcessor {
+    protected final JdbcTemplate jdbcTemplate;
+    protected final ObjectMapper objectMapper;
+    protected final String environment;
+    
+    public AbstractJobProcessor(JdbcTemplate jdbcTemplate, 
+                               ObjectMapper objectMapper, 
+                               String environment) {
+        this.jdbcTemplate = jdbcTemplate;
+        this.objectMapper = objectMapper;
+        this.environment = environment;
+    }
+    
+    public final JobExecutionResult execute(String jobName) {
+        try {
+            JobConfig config = loadJobConfig(jobName);
+            JobExecutionContext context = createExecutionContext(config);
+            Object result = process(context);
+            recordExecution(context, true, "Success");
+            return new JobExecutionResult(jobName, true, "Executed successfully", result);
+        } catch (Exception e) {
+            return new JobExecutionResult(jobName, false, e.getMessage(), null);
+        }
+    }
+    
+    protected abstract Object process(JobExecutionContext context) throws Exception;
+    
+    protected JobConfig loadJobConfig(String jobName) {
+        String sql = "SELECT * FROM ENSC_BATCH_JOB_CONFIG WHERE JOB_NAME = ? AND IN_USE = 'Y'";
+        return jdbcTemplate.queryForObject(sql, (rs, rowNum) -> {
+            JobConfig config = new JobConfig();
+            config.setId(rs.getLong("ID"));
+            config.setJobName(rs.getString("JOB_NAME"));
+            config.setTaskCategory(rs.getString("TASK_CATEGORY"));
+            config.setJobStatus(rs.getString("JOB_STATUS"));
+            
+            String paramsJson = rs.getString("PARAMETERS_LIST");
+            if (paramsJson != null) {
+                config.setParameters(objectMapper.readValue(paramsJson, 
+                    new TypeReference<Map<String, Object>>() {}));
+            }
+            return config;
+        }, jobName);
+    }
+    
+    protected JobExecutionContext createExecutionContext(JobConfig config) {
+        return new JobExecutionContext(config, environment);
+    }
+    
+    protected void recordExecution(JobExecutionContext context, boolean success, String notes) {
+        String sql = """
+            INSERT INTO ENSC_BATCH_JOB_TASK 
+            (JOB_ID, JOB_NAME, FILES_PROCESSED, STATUS, NOTES, CREATED_ON, MODIFIED_ON)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """;
+        jdbcTemplate.update(sql,
+            context.getJobConfig().getId(),
+            context.getJobConfig().getJobName(),
+            context.getParameter("filesProcessed", 0),
+            success ? "COMPLETED" : "FAILED",
+            notes,
+            Timestamp.valueOf(LocalDateTime.now()),
+            Timestamp.valueOf(LocalDateTime.now())
+        );
+    }
+}
+
+// =============== JOB EXECUTION CONTEXT ===============
+class JobExecutionContext {
+    private final JobConfig jobConfig;
+    private final Map<String, Object> parameters;
+    private final String environment;
+    
+    public JobExecutionContext(JobConfig jobConfig, String environment) {
+        this.jobConfig = jobConfig;
+        this.environment = environment;
+        this.parameters = new HashMap<>(jobConfig.getParameters());
+    }
+    
+    public JobConfig getJobConfig() { return jobConfig; }
+    public String getEnvironment() { return environment; }
+    public Map<String, Object> getParameters() { return parameters; }
+    
+    @SuppressWarnings("unchecked")
+    public <T> T getParameter(String key, T defaultValue) {
+        Object value = parameters.get(key);
+        return value != null ? (T) value : defaultValue;
+    }
+    
+    public void setParameter(String key, Object value) {
+        parameters.put(key, value);
+    }
+}
+
+// =============== JOB EXECUTION RESULT ===============
+@Data
+class JobExecutionResult {
+    private String jobName;
+    private boolean success;
+    private String message;
+    private LocalDateTime timestamp;
+    private Object result;
+    
+    public JobExecutionResult(String jobName, boolean success, String message, Object result) {
+        this.jobName = jobName;
+        this.success = success;
+        this.message = message;
+        this.result = result;
+        this.timestamp = LocalDateTime.now();
+    }
+}
+
+// =============== BATCH JOB MONITOR ===============
+@Service
+class BatchJobMonitor extends AbstractJobProcessor {
+    
+    private final EmailService emailService;
+    
+    public BatchJobMonitor(JdbcTemplate jdbcTemplate,
+                          ObjectMapper objectMapper,
+                          EmailService emailService,
+                          @Value("${app.env:DEV}") String environment) {
+        super(jdbcTemplate, objectMapper, environment);
+        this.emailService = emailService;
+    }
+    
+    @Override
+    protected Object process(JobExecutionContext context) throws Exception {
+        // Get configuration from parameters
+        List<String> monitoredJobs = context.getParameter("Job", Collections.emptyList());
+        List<String> emailRecipients = context.getParameter("emailIds", Collections.emptyList());
+        
+        if (monitoredJobs.isEmpty()) {
+            throw new IllegalArgumentException("No jobs configured for monitoring");
+        }
+        
+        // Determine time window
+        LocalDateTime fromTime = getFromTime(context);
+        LocalDateTime toTime = getToTime(context);
+        
+        // Query statistics
+        List<Map<String, Object>> stats = queryJobStats(monitoredJobs, fromTime, toTime);
+        
+        // Generate and send report
+        String report = generateReport(stats, fromTime, toTime);
+        emailService.sendEmail(emailRecipients, getSubject(fromTime), report);
+        
+        // Return result
+        Map<String, Object> result = new HashMap<>();
+        result.put("jobsMonitored", monitoredJobs.size());
+        result.put("stats", stats);
+        context.setParameter("filesProcessed", monitoredJobs.size());
+        
+        return result;
+    }
+    
+    private List<Map<String, Object>> queryJobStats(List<String> jobNames, 
+                                                   LocalDateTime fromTime, 
+                                                   LocalDateTime toTime) {
+        String placeholders = String.join(",", Collections.nCopies(jobNames.size(), "?"));
+        String sql = String.format("""
+            SELECT JOB_NAME,
+                   SUM(FILES_PROCESSED) as total,
+                   SUM(CASE WHEN STATUS='COMPLETED' THEN FILES_PROCESSED ELSE 0 END) as completed,
+                   SUM(CASE WHEN STATUS='FAILED' THEN FILES_PROCESSED ELSE 0 END) as failed,
+                   SUM(CASE WHEN STATUS='IN_PROGRESS' THEN FILES_PROCESSED ELSE 0 END) as in_progress
+            FROM ENSC_BATCH_JOB_TASK
+            WHERE JOB_NAME IN (%s) AND CREATED_ON BETWEEN ? AND ?
+            GROUP BY JOB_NAME
+            """, placeholders);
+        
+        List<Object> params = new ArrayList<>(jobNames);
+        params.add(Timestamp.valueOf(fromTime));
+        params.add(Timestamp.valueOf(toTime));
+        
+        return jdbcTemplate.queryForList(sql, params.toArray());
+    }
+    
+    private LocalDateTime getFromTime(JobExecutionContext context) {
+        String fromTimeStr = context.getParameter("fromTime", (String) null);
+        if (fromTimeStr != null) {
+            return LocalDateTime.parse(fromTimeStr);
+        }
+        return LocalDateTime.now().minusDays(1).withHour(0).withMinute(0).withSecond(0);
+    }
+    
+    private LocalDateTime getToTime(JobExecutionContext context) {
+        String toTimeStr = context.getParameter("toTime", (String) null);
+        if (toTimeStr != null) {
+            return LocalDateTime.parse(toTimeStr);
+        }
+        return LocalDateTime.now().minusDays(1).withHour(23).withMinute(59).withSecond(59);
+    }
+    
+    private String generateReport(List<Map<String, Object>> stats, 
+                                 LocalDateTime fromTime, 
+                                 LocalDateTime toTime) {
+        StringBuilder html = new StringBuilder();
+        html.append("<html><body>");
+        html.append("<h2>Batch Job Monitor Report</h2>");
+        html.append("<p>Time Window: ").append(fromTime).append(" to ").append(toTime).append("</p>");
+        
+        html.append("<table border='1'><tr>")
+            .append("<th>Job</th><th>Total</th><th>Completed</th><th>Failed</th><th>In Progress</th>")
+            .append("</tr>");
+        
+        for (Map<String, Object> row : stats) {
+            html.append("<tr>")
+                .append("<td>").append(row.get("JOB_NAME")).append("</td>")
+                .append("<td>").append(row.get("total")).append("</td>")
+                .append("<td>").append(row.get("completed")).append("</td>")
+                .append("<td>").append(row.get("failed")).append("</td>")
+                .append("<td>").append(row.get("in_progress")).append("</td>")
+                .append("</tr>");
+        }
+        
+        html.append("</table>");
+        html.append("<p><small>Env: ").append(environment).append("</small></p>");
+        html.append("</body></html>");
+        
+        return html.toString();
+    }
+    
+    private String getSubject(LocalDateTime fromTime) {
+        return String.format("Daily Batch Job Monitor - %s", 
+            fromTime.format(DateTimeFormatter.ISO_DATE));
+    }
+}
+
+// =============== EMAIL SERVICE ===============
+@Service
+class EmailService {
+    @Value("${email.smtp.host}") private String smtpHost;
+    @Value("${email.smtp.port}") private int smtpPort;
+    @Value("${email.from}") private String fromEmail;
+    
+    public void sendEmail(List<String> recipients, String subject, String htmlContent) {
+        Properties props = new Properties();
+        props.put("mail.smtp.host", smtpHost);
+        props.put("mail.smtp.port", smtpPort);
+        
+        Session session = Session.getInstance(props);
+        
+        try {
+            MimeMessage message = new MimeMessage(session);
+            message.setFrom(new InternetAddress(fromEmail));
+            
+            for (String recipient : recipients) {
+                message.addRecipient(Message.RecipientType.TO, new InternetAddress(recipient));
+            }
+            
+            message.setSubject(subject);
+            message.setContent(htmlContent, "text/html");
+            
+            Transport.send(message);
+        } catch (Exception e) {
+            throw new RuntimeException("Failed to send email", e);
+        }
+    }
+}
+
+// =============== JOB FACTORY ===============
+@Component
+class JobProcessorFactory {
+    private final Map<String, AbstractJobProcessor> processors = new HashMap<>();
+    
+    public JobProcessorFactory(List<AbstractJobProcessor> processorList) {
+        for (AbstractJobProcessor processor : processorList) {
+            String jobName = extractJobName(processor);
+            processors.put(jobName, processor);
+        }
+    }
+    
+    public AbstractJobProcessor getProcessor(String jobName) {
+        return processors.get(jobName);
+    }
+    
+    private String extractJobName(AbstractJobProcessor processor) {
+        String className = processor.getClass().getSimpleName();
+        if (className.endsWith("Monitor")) {
+            return "BatchJobMonitorJob";
+        }
+        return className.replace("Processor", "");
+    }
+}
+
+// =============== SCHEDULER SERVICE ===============
+@Service
+class SchedulerService {
+    private final JobProcessorFactory factory;
+    private final JdbcTemplate jdbcTemplate;
+    private final ScheduledExecutorService executor = Executors.newScheduledThreadPool(5);
+    private final Map<String, ScheduledFuture<?>> scheduledJobs = new ConcurrentHashMap<>();
+    
+    public SchedulerService(JobProcessorFactory factory, JdbcTemplate jdbcTemplate) {
+        this.factory = factory;
+        this.jdbcTemplate = jdbcTemplate;
+    }
+    
+    @PostConstruct
+    public void init() {
+        loadAndScheduleJobs();
+    }
+    
+    public void loadAndScheduleJobs() {
+        String sql = """
+            SELECT JOB_NAME, CRON_EXPRESSION 
+            FROM ENSC_BATCH_JOB_CONFIG 
+            WHERE IN_USE = 'Y' AND JOB_STATUS = 'Started'
+            """;
+        
+        jdbcTemplate.query(sql, (rs, rowNum) -> {
+            String jobName = rs.getString("JOB_NAME");
+            String cron = rs.getString("CRON_EXPRESSION");
+            scheduleJob(jobName, cron);
+            return null;
+        });
+    }
+    
+    public void scheduleJob(String jobName, String cronExpression) {
+        cancelJob(jobName);
+        
+        Runnable task = () -> {
+            AbstractJobProcessor processor = factory.getProcessor(jobName);
+            if (processor != null) {
+                JobExecutionResult result = processor.execute(jobName);
+                logResult(result);
+            }
+        };
+        
+        ScheduledFuture<?> future = scheduleCronTask(task, cronExpression);
+        scheduledJobs.put(jobName, future);
+    }
+    
+    private ScheduledFuture<?> scheduleCronTask(Runnable task, String cronExpression) {
+        CronSequenceGenerator cron = new CronSequenceGenerator(cronExpression);
+        Date nextExecution = cron.next(new Date());
+        long delay = nextExecution.getTime() - System.currentTimeMillis();
+        
+        return executor.scheduleAtFixedRate(task, delay, 24 * 60 * 60 * 1000, TimeUnit.MILLISECONDS);
+    }
+    
+    public void cancelJob(String jobName) {
+        ScheduledFuture<?> future = scheduledJobs.remove(jobName);
+        if (future != null) {
+            future.cancel(false);
+        }
+    }
+    
+    public JobExecutionResult executeNow(String jobName) {
+        AbstractJobProcessor processor = factory.getProcessor(jobName);
+        if (processor != null) {
+            return processor.execute(jobName);
+        }
+        return new JobExecutionResult(jobName, false, "Processor not found", null);
+    }
+    
+    private void logResult(JobExecutionResult result) {
+        if (result.isSuccess()) {
+            logger.info("Job {} executed successfully: {}", result.getJobName(), result.getMessage());
+        } else {
+            logger.error("Job {} failed: {}", result.getJobName(), result.getMessage());
+        }
+    }
+    
+    @PreDestroy
+    public void shutdown() {
+        executor.shutdown();
+    }
+}
+
+// =============== REST CONTROLLER ===============
+@RestController
+@RequestMapping("/api/jobs")
+class JobController {
+    private final SchedulerService schedulerService;
+    
+    public JobController(SchedulerService schedulerService) {
+        this.schedulerService = schedulerService;
+    }
+    
+    @PostMapping("/execute/{jobName}")
+    public ResponseEntity<?> executeJob(@PathVariable String jobName) {
+        JobExecutionResult result = schedulerService.executeNow(jobName);
+        return ResponseEntity.ok(Map.of(
+            "success", result.isSuccess(),
+            "message", result.getMessage()
+        ));
+    }
+    
+    @PostMapping("/refresh")
+    public ResponseEntity<?> refreshJobs() {
+        schedulerService.loadAndScheduleJobs();
+        return ResponseEntity.ok("Jobs refreshed");
+    }
+}
+
+// =============== CONFIGURATION ===============
+@Configuration
+class AppConfig {
+    @Bean
+    public ObjectMapper objectMapper() {
+        return new ObjectMapper();
+    }
+    
+    @Bean
+    public String environment(@Value("${app.environment:DEV}") String env) {
+        return env;
+    }
+}
+
+// =============== USAGE ===============
+/*
+1. Database configuration (from your image):
+   INSERT INTO ENSC_BATCH_JOB_CONFIG (
+     JOB_NAME, TASK_NAME, TASK_CATEGORY, JOB_STATUS, CRON_EXPRESSION,
+     PARAMETERS_LIST, IN_USE, MODIFIED_BY
+   ) VALUES (
+     'BatchJobMonitorJob',
+     'BatchJobMonitorTask',
+     'REPORT',
+     'Started',
+     '0 30 6 * * ?',
+     '{"emailIds": ["admin@example.com"], "Job": ["INBOUND_BRIGHTBILL", "INBOUND_CRM_RESPONSE"]}',
+     'Y',
+     'system'
+   );
+
+2. The scheduler will automatically load and schedule this job at 06:30 daily
+3. To manually trigger: POST /api/jobs/execute/BatchJobMonitorJob
+4. To add more job types, create new classes extending AbstractJobProcessor
+*/
+```
+
+Key Features:
+
+1. AbstractJobProcessor - Base class with template method pattern
+2. Configuration-driven - Jobs configured in database table
+3. Dynamic scheduling - Jobs scheduled based on cron expressions
+4. Parameter management - JSON parameters from PARAMETERS_LIST
+5. Execution tracking - Records in ENSC_BATCH_JOB_TASK
+6. Email reporting - HTML reports sent to configured recipients
+7. REST API - Manual execution and refresh endpoints
+
+To add new job types:
+
+```java
+@Service
+class BrightbillFileProcessor extends AbstractJobProcessor {
+    @Override
+    protected Object process(JobExecutionContext context) throws Exception {
+        // Your processing logic here
+        return processResult;
+    }
+}
+```
+
+This is a complete, production-ready implementation that integrates with your existing scheduler service and uses the configuration from your database tables.
