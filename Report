@@ -1,0 +1,1278 @@
+import org.springframework.mail.javamail.JavaMailSender;
+import org.springframework.mail.javamail.MimeMessageHelper;
+import org.springframework.stereotype.Service;
+
+import javax.mail.MessagingException;
+import javax.mail.internet.MimeMessage;
+import java.io.UnsupportedEncodingException;
+import java.util.List;
+
+/**
+ * Simple email service - only responsible for sending emails
+ */
+@Service
+@Slf4j
+public class EmailService {
+    
+    private final JavaMailSender mailSender;
+    
+    public EmailService(JavaMailSender mailSender) {
+        this.mailSender = mailSender;
+    }
+    
+    /**
+     * Send an HTML email
+     */
+    public boolean sendEmail(EmailRequest request) {
+        try {
+            validateRequest(request);
+            
+            MimeMessage mimeMessage = mailSender.createMimeMessage();
+            MimeMessageHelper helper = new MimeMessageHelper(mimeMessage, true, "UTF-8");
+            
+            helper.setTo(request.getToRecipients().toArray(new String[0]));
+            helper.setSubject(request.getSubject());
+            helper.setText(request.getHtmlBody(), true);
+            helper.setFrom(request.getFromEmail(), request.getFromName());
+            
+            if (request.getCcRecipients() != null && !request.getCcRecipients().isEmpty()) {
+                helper.setCc(request.getCcRecipients().toArray(new String[0]));
+            }
+            
+            if (request.getBccRecipients() != null && !request.getBccRecipients().isEmpty()) {
+                helper.setBcc(request.getBccRecipients().toArray(new String[0]));
+            }
+            
+            mailSender.send(mimeMessage);
+            log.info("Email sent successfully to {} recipients", request.getToRecipients().size());
+            return true;
+            
+        } catch (MessagingException | UnsupportedEncodingException e) {
+            log.error("Failed to send email: {}", e.getMessage(), e);
+            return false;
+        }
+    }
+    
+    private void validateRequest(EmailRequest request) {
+        if (request == null) {
+            throw new IllegalArgumentException("Email request cannot be null");
+        }
+        
+        if (request.getToRecipients() == null || request.getToRecipients().isEmpty()) {
+            throw new IllegalArgumentException("At least one 'to' recipient is required");
+        }
+        
+        if (request.getSubject() == null || request.getSubject().trim().isEmpty()) {
+            throw new IllegalArgumentException("Email subject is required");
+        }
+        
+        if (request.getHtmlBody() == null || request.getHtmlBody().trim().isEmpty()) {
+            throw new IllegalArgumentException("Email body is required");
+        }
+        
+        if (request.getFromEmail() == null || request.getFromEmail().trim().isEmpty()) {
+            throw new IllegalArgumentException("From email is required");
+        }
+    }
+    
+    @Data
+    @Builder
+    @NoArgsConstructor
+    @AllArgsConstructor
+    public static class EmailRequest {
+        private String subject;
+        private String htmlBody;
+        private List<String> toRecipients;
+        private List<String> ccRecipients;
+        private List<String> bccRecipients;
+        private String fromEmail;
+        private String fromName;
+    }
+}
+
+import org.springframework.stereotype.Component;
+import org.springframework.util.StringUtils;
+
+import java.util.*;
+import java.util.function.Function;
+import java.util.stream.Collectors;
+
+/**
+ * Component ONLY for building HTML tables.
+ * No report headers, no footers, no CSS - just tables.
+ */
+@Component
+@Slf4j
+public class HtmlTableBuilder {
+    
+    /**
+     * Build a simple HTML table with headers and data rows
+     */
+    public String buildTable(TableRequest request) {
+        validateRequest(request);
+        
+        if (request.getRows().isEmpty() && !request.isShowEmptyMessage()) {
+            return "";
+        }
+        
+        StringBuilder table = new StringBuilder(4096);
+        
+        // Start table
+        table.append("<table class=\"data-table\"");
+        if (StringUtils.hasText(request.getId())) {
+            table.append(" id=\"").append(escape(request.getId())).append("\"");
+        }
+        
+        if (StringUtils.hasText(request.getCssClass())) {
+            table.append(" class=\"").append(request.getCssClass()).append("\"");
+        }
+        
+        if (request.getAttributes() != null && !request.getAttributes().isEmpty()) {
+            request.getAttributes().forEach((key, value) -> {
+                table.append(" ").append(key).append("=\"").append(escape(value)).append("\"");
+            });
+        }
+        
+        table.append(">\n");
+        
+        // Table caption (optional)
+        if (StringUtils.hasText(request.getCaption())) {
+            table.append("<caption>").append(escape(request.getCaption())).append("</caption>\n");
+        }
+        
+        // Table headers
+        if (request.getHeaders() != null && request.getHeaders().length > 0) {
+            table.append("<thead>\n<tr>\n");
+            for (int i = 0; i < request.getHeaders().length; i++) {
+                String headerClass = getHeaderClass(request, i);
+                table.append("<th").append(headerClass).append(">")
+                     .append(escape(request.getHeaders()[i]))
+                     .append("</th>\n");
+            }
+            table.append("</tr>\n</thead>\n");
+        }
+        
+        // Table body
+        table.append("<tbody>\n");
+        
+        if (request.getRows().isEmpty()) {
+            // Empty state
+            int colspan = request.getHeaders() != null ? request.getHeaders().length : 1;
+            table.append("<tr>\n<td colspan=\"").append(colspan)
+                 .append("\" class=\"no-data\">")
+                 .append(escape(request.getEmptyMessage()))
+                 .append("</td>\n</tr>\n");
+        } else {
+            // Data rows
+            for (Object[] row : request.getRows()) {
+                table.append("<tr>\n");
+                for (int i = 0; i < row.length; i++) {
+                    String cellContent = renderCell(row[i], i, request);
+                    String cellClass = getCellClass(request, i);
+                    table.append("<td").append(cellClass).append(">")
+                         .append(cellContent)
+                         .append("</td>\n");
+                }
+                table.append("</tr>\n");
+            }
+        }
+        
+        table.append("</tbody>\n");
+        
+        // Table footer (optional)
+        if (StringUtils.hasText(request.getFooter())) {
+            int colspan = request.getHeaders() != null ? request.getHeaders().length : 1;
+            table.append("<tfoot>\n<tr>\n<td colspan=\"")
+                 .append(colspan)
+                 .append("\">")
+                 .append(escape(request.getFooter()))
+                 .append("</td>\n</tr>\n</tfoot>\n");
+        }
+        
+        table.append("</table>");
+        
+        return table.toString();
+    }
+    
+    /**
+     * Build multiple tables (for reports with multiple sections)
+     */
+    public String buildMultipleTables(List<TableRequest> tables) {
+        if (tables == null || tables.isEmpty()) {
+            return "";
+        }
+        
+        StringBuilder allTables = new StringBuilder();
+        for (TableRequest table : tables) {
+            allTables.append(buildTable(table)).append("\n");
+        }
+        return allTables.toString();
+    }
+    
+    private String renderCell(Object value, int columnIndex, TableRequest request) {
+        if (value == null) {
+            return request.isShowNullAsEmpty() ? "" : "N/A";
+        }
+        
+        // Use custom cell renderer if provided
+        if (request.getCellRenderers() != null && request.getCellRenderers().containsKey(columnIndex)) {
+            return request.getCellRenderers().get(columnIndex).apply(value);
+        }
+        
+        // Use column-specific formatter if provided
+        if (request.getColumnFormatters() != null && request.getColumnFormatters().containsKey(columnIndex)) {
+            return request.getColumnFormatters().get(columnIndex).apply(value.toString());
+        }
+        
+        // Default: escape HTML
+        return escape(value.toString());
+    }
+    
+    private String getHeaderClass(TableRequest request, int columnIndex) {
+        StringBuilder classes = new StringBuilder();
+        
+        // Add column-specific header class
+        if (request.getHeaderClasses() != null && columnIndex < request.getHeaderClasses().length) {
+            if (StringUtils.hasText(request.getHeaderClasses()[columnIndex])) {
+                classes.append(" ").append(request.getHeaderClasses()[columnIndex]);
+            }
+        }
+        
+        // Add alignment class
+        String alignment = getColumnAlignment(request, columnIndex);
+        if (StringUtils.hasText(alignment)) {
+            classes.append(" text-").append(alignment);
+        }
+        
+        return classes.length() > 0 ? " class=\"" + classes.toString().trim() + "\"" : "";
+    }
+    
+    private String getCellClass(TableRequest request, int columnIndex) {
+        StringBuilder classes = new StringBuilder();
+        
+        // Add column-specific cell class
+        if (request.getColumnClasses() != null && columnIndex < request.getColumnClasses().length) {
+            if (StringUtils.hasText(request.getColumnClasses()[columnIndex])) {
+                classes.append(" ").append(request.getColumnClasses()[columnIndex]);
+            }
+        }
+        
+        // Add alignment class
+        String alignment = getColumnAlignment(request, columnIndex);
+        if (StringUtils.hasText(alignment)) {
+            classes.append(" text-").append(alignment);
+        }
+        
+        // Add numeric class if column contains numbers
+        if (request.getNumericColumns() != null && request.getNumericColumns().contains(columnIndex)) {
+            classes.append(" numeric");
+        }
+        
+        return classes.length() > 0 ? " class=\"" + classes.toString().trim() + "\"" : "";
+    }
+    
+    private String getColumnAlignment(TableRequest request, int columnIndex) {
+        if (request.getColumnAlignments() != null && request.getColumnAlignments().containsKey(columnIndex)) {
+            return request.getColumnAlignments().get(columnIndex);
+        }
+        
+        // Default alignment based on column type
+        if (request.getNumericColumns() != null && request.getNumericColumns().contains(columnIndex)) {
+            return "right";
+        }
+        
+        return "left";
+    }
+    
+    private void validateRequest(TableRequest request) {
+        if (request == null) {
+            throw new IllegalArgumentException("Table request cannot be null");
+        }
+    }
+    
+    /**
+     * Escape HTML special characters
+     */
+    public String escape(String input) {
+        if (input == null) return "";
+        
+        return input.chars()
+            .mapToObj(c -> {
+                switch (c) {
+                    case '&': return "&amp;";
+                    case '<': return "&lt;";
+                    case '>': return "&gt;";
+                    case '"': return "&quot;";
+                    case '\'': return "&#39;";
+                    default: return String.valueOf((char) c);
+                }
+            })
+            .collect(Collectors.joining());
+    }
+    
+    @Data
+    @Builder
+    @NoArgsConstructor
+    @AllArgsConstructor
+    public static class TableRequest {
+        // Table identification
+        private String id;
+        private String cssClass;
+        private Map<String, String> attributes;
+        
+        // Table content
+        private String[] headers;
+        private List<Object[]> rows;
+        private String caption;
+        private String footer;
+        
+        // Styling
+        private String[] headerClasses;
+        private String[] columnClasses;
+        private Set<Integer> numericColumns;
+        private Map<Integer, String> columnAlignments;
+        
+        // Cell rendering
+        private Map<Integer, Function<Object, String>> cellRenderers;
+        private Map<Integer, Function<String, String>> columnFormatters;
+        
+        // Empty state
+        @Builder.Default
+        private boolean showEmptyMessage = true;
+        @Builder.Default
+        private String emptyMessage = "No data available";
+        @Builder.Default
+        private boolean showNullAsEmpty = true;
+    }
+}
+
+
+
+                              import org.springframework.stereotype.Component;
+import org.springframework.util.StringUtils;
+
+import java.time.LocalDateTime;
+import java.time.format.DateTimeFormatter;
+import java.util.Map;
+
+/**
+ * Simple component to wrap table(s) in basic HTML email structure.
+ * Kept minimal - only what's needed for email display.
+ */
+@Component
+public class EmailReportWrapper {
+    
+    private static final DateTimeFormatter TIMESTAMP_FORMATTER = 
+        DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
+    
+    /**
+     * Wrap table HTML in minimal email-friendly HTML structure
+     */
+    public String wrapInEmail(String tableHtml, EmailWrapperRequest request) {
+        StringBuilder emailHtml = new StringBuilder(8192);
+        
+        // Start HTML
+        emailHtml.append("""
+            <!DOCTYPE html>
+            <html>
+            <head>
+                <meta charset="UTF-8">
+                <meta name="viewport" content="width=device-width, initial-scale=1.0">
+                <title>""").append(escape(request.getTitle())).append("""</title>
+                <style>
+                    body { font-family: Arial, sans-serif; color: #333; margin: 0; padding: 20px; background: #f5f5f5; }
+                    .email-container { max-width: 1000px; margin: 0 auto; background: white; border-radius: 8px; overflow: hidden; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
+                    .email-header { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 25px 30px; }
+                    .email-header h1 { margin: 0; font-size: 24px; font-weight: 600; }
+                    .email-header .subtitle { margin: 8px 0 0; opacity: 0.9; font-size: 14px; }
+                    .email-content { padding: 30px; }
+                    .email-footer { padding: 20px 30px; border-top: 1px solid #eaeaea; color: #666; font-size: 12px; text-align: center; }
+                    .data-table { width: 100%; border-collapse: collapse; margin: 20px 0; }
+                    .data-table th { background: #f8f9fa; padding: 12px 15px; text-align: left; font-weight: bold; color: #495057; border-bottom: 2px solid #dee2e6; }
+                    .data-table td { padding: 12px 15px; border-bottom: 1px solid #e9ecef; }
+                    .data-table tr:nth-child(even) { background: #f8f9fa; }
+                    .data-table tr:hover { background: #f1f3f5; }
+                    .text-right { text-align: right; }
+                    .text-center { text-align: center; }
+                    .numeric { font-family: 'SF Mono', Monaco, Consolas, monospace; }
+                    .no-data { text-align: center; color: #6c757d; padding: 40px !important; font-style: italic; }
+                </style>
+            </head>
+            <body>
+                <div class="email-container">
+                    <div class="email-header">
+                        <h1>""").append(escape(request.getTitle())).append("</h1>\n");
+        
+        if (StringUtils.hasText(request.getSubtitle())) {
+            emailHtml.append("<div class=\"subtitle\">")
+                     .append(escape(request.getSubtitle()))
+                     .append("</div>\n");
+        }
+        
+        emailHtml.append("""
+                    </div>
+                    <div class="email-content">
+            """);
+        
+        // Add table(s)
+        emailHtml.append(tableHtml);
+        
+        // Add additional content if provided
+        if (StringUtils.hasText(request.getAdditionalContent())) {
+            emailHtml.append("<div style=\"margin-top: 20px;\">")
+                     .append(request.getAdditionalContent())
+                     .append("</div>\n");
+        }
+        
+        emailHtml.append("""
+                    </div>
+                    <div class="email-footer">
+            """);
+        
+        if (StringUtils.hasText(request.getFooterText())) {
+            emailHtml.append("<p>").append(escape(request.getFooterText())).append("</p>\n");
+        }
+        
+        emailHtml.append("<p><em>Report generated: ")
+                 .append(LocalDateTime.now().format(TIMESTAMP_FORMATTER))
+                 .append("</em></p>\n");
+        
+        emailHtml.append("""
+                    </div>
+                </div>
+            </body>
+            </html>
+            """);
+        
+        return emailHtml.toString();
+    }
+    
+    /**
+     * Create a simple alert/notification section
+     */
+    public String createAlertSection(String title, String message, AlertType type) {
+        String color;
+        String icon;
+        
+        switch (type) {
+            case ERROR:
+                color = "#f8d7da";
+                icon = "⚠️";
+                break;
+            case WARNING:
+                color = "#fff3cd";
+                icon = "⚠️";
+                break;
+            case SUCCESS:
+                color = "#d4edda";
+                icon = "✅";
+                break;
+            default:
+                color = "#d1ecf1";
+                icon = "ℹ️";
+        }
+        
+        return String.format("""
+            <div style="background: %s; border-left: 4px solid; padding: 15px; margin: 20px 0; border-radius: 4px;">
+                <strong>%s %s</strong><br>
+                %s
+            </div>
+            """, color, icon, escape(title), escape(message));
+    }
+    
+    /**
+     * Create a summary metrics section
+     */
+    public String createMetricsSummary(Map<String, String> metrics) {
+        if (metrics == null || metrics.isEmpty()) {
+            return "";
+        }
+        
+        StringBuilder metricsHtml = new StringBuilder();
+        metricsHtml.append("""
+            <div style="background: #f8f9fa; border: 1px solid #dee2e6; border-radius: 6px; padding: 20px; margin: 20px 0;">
+                <div style="font-weight: bold; margin-bottom: 15px; color: #495057;">Summary</div>
+                <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px;">
+            """);
+        
+        metrics.forEach((label, value) -> {
+            metricsHtml.append(String.format("""
+                <div>
+                    <div style="font-size: 12px; color: #6c757d; margin-bottom: 4px;">%s</div>
+                    <div style="font-size: 18px; font-weight: bold; color: #212529;">%s</div>
+                </div>
+                """, escape(label), escape(value)));
+        });
+        
+        metricsHtml.append("</div></div>");
+        return metricsHtml.toString();
+    }
+    
+    private String escape(String input) {
+        if (input == null) return "";
+        return input.replace("&", "&amp;")
+                   .replace("<", "&lt;")
+                   .replace(">", "&gt;")
+                   .replace("\"", "&quot;")
+                   .replace("'", "&#39;");
+    }
+    
+    @Data
+    @Builder
+    @NoArgsConstructor
+    @AllArgsConstructor
+    public static class EmailWrapperRequest {
+        private String title;
+        private String subtitle;
+        private String footerText;
+        private String additionalContent;
+    }
+    
+    public enum AlertType {
+        INFO, SUCCESS, WARNING, ERROR
+    }
+}
+
+
+                              
+   import com.fasterxml.jackson.databind.JsonNode;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import javax.persistence.EntityManager;
+import java.time.LocalDate;
+import java.time.OffsetDateTime;
+import java.time.ZoneId;
+import java.time.ZonedDateTime;
+import java.util.*;
+
+/**
+ * Abstract base class for monitoring jobs.
+ * Each concrete class defines its own table structure, email subject, recipients, etc.
+ */
+public abstract class MonitoringJobBatchBuilder<T> implements BatchBuilder {
+    
+    protected static final Logger log = LoggerFactory.getLogger(MonitoringJobBatchBuilder.class);
+    
+    // Services
+    protected final EmailService emailService;
+    protected final HtmlTableBuilder htmlTableBuilder;
+    protected final EmailReportWrapper emailReportWrapper;
+    
+    // Other dependencies
+    protected final AppParameters appParameters;
+    protected final EntityManager entityManager;
+    
+    protected MonitoringJobBatchBuilder(
+            EmailService emailService,
+            HtmlTableBuilder htmlTableBuilder,
+            EmailReportWrapper emailReportWrapper,
+            AppParameters appParameters,
+            EntityManager entityManager) {
+        
+        this.emailService = emailService;
+        this.htmlTableBuilder = htmlTableBuilder;
+        this.emailReportWrapper = emailReportWrapper;
+        this.appParameters = appParameters;
+        this.entityManager = entityManager;
+    }
+    
+    // ========== ABSTRACT METHODS ==========
+    // Each concrete class MUST implement these
+    
+    /**
+     * Fetch data for the report
+     */
+    protected abstract List<T> fetchRows(JsonNode params, BatchContext context) throws Exception;
+    
+    /**
+     * Build the table request (headers, rows, formatting)
+     */
+    protected abstract HtmlTableBuilder.TableRequest buildTableRequest(List<T> rows, JsonNode params);
+    
+    /**
+     * Get email subject (can include dynamic data like dates)
+     */
+    protected abstract String getEmailSubject(JsonNode params);
+    
+    /**
+     * Get email title (shown in email header)
+     */
+    protected abstract String getEmailTitle(JsonNode params);
+    
+    /**
+     * Get email subtitle (shown under title)
+     */
+    protected abstract String getEmailSubtitle(JsonNode params);
+    
+    /**
+     * Get email recipients (to)
+     */
+    protected abstract List<String> getEmailRecipients(JsonNode params);
+    
+    /**
+     * Get email CC recipients
+     */
+    protected List<String> getEmailCcRecipients(JsonNode params) {
+        return Collections.emptyList();
+    }
+    
+    /**
+     * Get email BCC recipients
+     */
+    protected List<String> getEmailBccRecipients(JsonNode params) {
+        return Collections.emptyList();
+    }
+    
+    /**
+     * Get from email address
+     */
+    protected String getFromEmail(JsonNode params) {
+        return "noreply@company.com";
+    }
+    
+    /**
+     * Get from name
+     */
+    protected String getFromName(JsonNode params) {
+        return "Monitoring System";
+    }
+    
+    /**
+     * Get additional content to include after table (alerts, summaries, etc.)
+     */
+    protected String getAdditionalEmailContent(List<T> rows, JsonNode params) {
+        return "";
+    }
+    
+    /**
+     * Get email footer text
+     */
+    protected String getEmailFooterText(JsonNode params) {
+        return "This is an automated report. Please contact support for any questions.";
+    }
+    
+    // ========== TEMPLATE METHOD ==========
+    
+    @Override
+    public final boolean execute(BatchContext context) {
+        try {
+            log.info("Starting {} execution", getClass().getSimpleName());
+            
+            // Parse parameters
+            JsonNode params = parseParameters(context);
+            
+            // Fetch data
+            List<T> rows = fetchRows(params, context);
+            
+            // Build table
+            HtmlTableBuilder.TableRequest tableRequest = buildTableRequest(rows, params);
+            String tableHtml = htmlTableBuilder.buildTable(tableRequest);
+            
+            // Build additional content
+            String additionalContent = getAdditionalEmailContent(rows, params);
+            
+            // Wrap in email HTML
+            String emailHtml = wrapTableInEmail(tableHtml, additionalContent, params);
+            
+            // Send email
+            return sendEmail(emailHtml, params);
+            
+        } catch (Exception ex) {
+            log.error("Job execution failed: {}", ex.getMessage(), ex);
+            return false;
+        }
+    }
+    
+    // ========== PROTECTED HELPER METHODS ==========
+    
+    /**
+     * Wrap table in email HTML
+     */
+    protected String wrapTableInEmail(String tableHtml, String additionalContent, JsonNode params) {
+        EmailReportWrapper.EmailWrapperRequest wrapperRequest = EmailReportWrapper.EmailWrapperRequest.builder()
+            .title(getEmailTitle(params))
+            .subtitle(getEmailSubtitle(params))
+            .footerText(getEmailFooterText(params))
+            .additionalContent(additionalContent)
+            .build();
+        
+        return emailReportWrapper.wrapInEmail(tableHtml, wrapperRequest);
+    }
+    
+    /**
+     * Send the email
+     */
+    protected boolean sendEmail(String emailHtml, JsonNode params) {
+        EmailService.EmailRequest emailRequest = EmailService.EmailRequest.builder()
+            .subject(getEmailSubject(params))
+            .htmlBody(emailHtml)
+            .toRecipients(getEmailRecipients(params))
+            .ccRecipients(getEmailCcRecipients(params))
+            .bccRecipients(getEmailBccRecipients(params))
+            .fromEmail(getFromEmail(params))
+            .fromName(getFromName(params))
+            .build();
+        
+        return emailService.sendEmail(emailRequest);
+    }
+    
+    /**
+     * Parse JSON parameters from context
+     */
+    protected JsonNode parseParameters(BatchContext context) throws Exception {
+        String paramsJson = context.getBatchJobConfig().getParametersList();
+        return ENSJsonUtil.getJsonFromString(paramsJson);
+    }
+    
+    /**
+     * Get yesterday's time window (00:00:00 to 23:59:59.999)
+     */
+    protected OffsetDateTime[] getYesterdayWindow(ZoneId zoneId) {
+        ZonedDateTime now = ZonedDateTime.now(zoneId);
+        ZonedDateTime yesterday = now.minusDays(1);
+        
+        ZonedDateTime start = yesterday.withHour(0).withMinute(0).withSecond(0).withNano(0);
+        ZonedDateTime end = yesterday.withHour(23).withMinute(59).withSecond(59).withNano(999999999);
+        
+        return new OffsetDateTime[] { start.toOffsetDateTime(), end.toOffsetDateTime() };
+    }
+    
+    /**
+     * Get yesterday's date
+     */
+    protected LocalDate getYesterdayDate(ZoneId zoneId) {
+        return LocalDate.now(zoneId).minusDays(1);
+    }
+    
+    /**
+     * Get timezone from parameters or app defaults
+     */
+    protected ZoneId getTimezone(JsonNode params) {
+        if (params.has("timezone")) {
+            return ZoneId.of(params.get("timezone").asText());
+        }
+        return appParameters.getZoneId();
+    }
+    
+    /**
+     * Extract list parameter from JSON
+     */
+    protected List<String> extractListParam(JsonNode params, String paramPath) {
+        JsonNode node = params.at("/" + paramPath.replace('.', '/'));
+        if (node == null || node.isMissingNode()) {
+            return Collections.emptyList();
+        }
+        
+        if (node.isArray()) {
+            List<String> result = new ArrayList<>();
+            node.forEach(item -> result.add(item.asText()));
+            return result;
+        }
+        
+        return Arrays.stream(node.asText().split(","))
+            .map(String::trim)
+            .filter(s -> !s.isEmpty())
+            .toList();
+    }
+    
+    /**
+     * Extract string parameter with default
+     */
+    protected String extractString(JsonNode params, String paramPath, String defaultValue) {
+        JsonNode node = params.at("/" + paramPath.replace('.', '/'));
+        if (node != null && !node.isMissingNode() && node.isTextual()) {
+            return node.asText();
+        }
+        return defaultValue;
+    }
+    
+    /**
+     * Create alert content for email
+     */
+    protected String createAlert(String title, String message, EmailReportWrapper.AlertType type) {
+        return emailReportWrapper.createAlertSection(title, message, type);
+    }
+    
+    /**
+     * Create metrics summary for email
+     */
+    protected String createMetricsSummary(Map<String, String> metrics) {
+        return emailReportWrapper.createMetricsSummary(metrics);
+    }
+}      
+
+
+  import com.fasterxml.jackson.databind.JsonNode;
+import lombok.RequiredArgsConstructor;
+import org.springframework.stereotype.Service;
+
+import java.time.LocalDate;
+import java.time.format.DateTimeFormatter;
+import java.util.*;
+import java.util.function.Function;
+
+/**
+ * Concrete implementation for batch job monitoring.
+ * Defines its own table structure, email details, etc.
+ */
+@Service("BatchJobMonitorTask")
+@RequiredArgsConstructor
+public class BatchJobMonitorJobBuilder extends MonitoringJobBatchBuilder<Object[]> {
+    
+    // Table structure specific to this job
+    private static final String[] TABLE_HEADERS = {
+        "Job Name", 
+        "Files Processed", 
+        "Completed", 
+        "Failed", 
+        "In Progress", 
+        "Success Rate"
+    };
+    
+    private static final String[] COLUMN_CLASSES = {
+        "job-name",
+        "numeric",
+        "numeric status-good",
+        "numeric status-bad",
+        "numeric status-warning",
+        "numeric success-rate"
+    };
+    
+    private static final Set<Integer> NUMERIC_COLUMNS = Set.of(1, 2, 3, 4, 5);
+    
+    private static final Map<Integer, String> COLUMN_ALIGNMENTS = Map.of(
+        0, "left",
+        1, "right",
+        2, "right",
+        3, "right",
+        4, "right",
+        5, "right"
+    );
+    
+    // Formatters for specific columns
+    private static final Map<Integer, Function<Object, String>> CELL_RENDERERS = new HashMap<>();
+    private static final Map<Integer, Function<String, String>> COLUMN_FORMATTERS = new HashMap<>();
+    
+    static {
+        // Format success rate with color coding
+        CELL_RENDERERS.put(5, value -> {
+            if (value == null) return "N/A";
+            String rateStr = value.toString().replace("%", "");
+            try {
+                double rate = Double.parseDouble(rateStr);
+                String colorClass = rate >= 95 ? "rate-excellent" : 
+                                   rate >= 80 ? "rate-good" : 
+                                   rate >= 60 ? "rate-fair" : "rate-poor";
+                return String.format("<span class=\"%s\">%.1f%%</span>", colorClass, rate);
+            } catch (NumberFormatException e) {
+                return value.toString();
+            }
+        });
+        
+        // Format numeric columns with thousands separator
+        COLUMN_FORMATTERS.put(1, value -> formatNumber(value));
+        COLUMN_FORMATTERS.put(2, value -> formatNumber(value));
+        COLUMN_FORMATTERS.put(3, value -> formatNumber(value));
+        COLUMN_FORMATTERS.put(4, value -> formatNumber(value));
+    }
+    
+    private final BatchJobTaskRepository batchJobTaskRepository;
+    
+    @Override
+    protected List<Object[]> fetchRows(JsonNode params, BatchContext context) {
+        // Extract parameters
+        List<String> jobNames = extractListParam(params, "jobs");
+        if (jobNames.isEmpty()) {
+            throw new IllegalArgumentException("Parameter 'jobs' must be a non-empty list or CSV");
+        }
+        
+        // Get timezone
+        ZoneId zoneId = getTimezone(params);
+        
+        // Get yesterday's window
+        OffsetDateTime[] window = getYesterdayWindow(zoneId);
+        
+        // Get status mappings
+        List<String> completedStatuses = extractListParam(params, "status.completed");
+        List<String> failedStatuses = extractListParam(params, "status.failed");
+        List<String> inProgressStatuses = extractListParam(params, "status.inProgress");
+        
+        // Use defaults if not specified
+        if (completedStatuses.isEmpty()) completedStatuses = List.of("COMPLETED", "SUCCESS");
+        if (failedStatuses.isEmpty()) failedStatuses = List.of("FAILED", "ERROR");
+        if (inProgressStatuses.isEmpty()) inProgressStatuses = List.of("IN_PROGRESS", "PROCESSING");
+        
+        // Fetch data from repository
+        List<Object[]> rawData = batchJobTaskRepository.aggregateByWindow(
+            window[0], window[1], jobNames,
+            completedStatuses, failedStatuses, inProgressStatuses
+        );
+        
+        // Calculate success rates
+        return calculateSuccessRates(rawData);
+    }
+    
+    @Override
+    protected HtmlTableBuilder.TableRequest buildTableRequest(List<Object[]> rows, JsonNode params) {
+        return HtmlTableBuilder.TableRequest.builder()
+            .id("batch-job-table")
+            .cssClass("batch-job-table")
+            .headers(TABLE_HEADERS)
+            .rows(rows)
+            .columnClasses(COLUMN_CLASSES)
+            .numericColumns(NUMERIC_COLUMNS)
+            .columnAlignments(COLUMN_ALIGNMENTS)
+            .cellRenderers(CELL_RENDERERS)
+            .columnFormatters(COLUMN_FORMATTERS)
+            .caption("Daily Batch Job Processing Summary")
+            .emptyMessage("No batch jobs were processed yesterday")
+            .showEmptyMessage(true)
+            .build();
+    }
+    
+    @Override
+    protected String getEmailSubject(JsonNode params) {
+        LocalDate yesterday = getYesterdayDate(getTimezone(params));
+        String dateStr = yesterday.format(DateTimeFormatter.ofPattern("yyyy-MM-dd"));
+        return "Daily Batch Job Report - " + dateStr;
+    }
+    
+    @Override
+    protected String getEmailTitle(JsonNode params) {
+        LocalDate yesterday = getYesterdayDate(getTimezone(params));
+        String dateStr = yesterday.format(DateTimeFormatter.ofPattern("MMMM d, yyyy"));
+        return "Batch Job Processing Report - " + dateStr;
+    }
+    
+    @Override
+    protected String getEmailSubtitle(JsonNode params) {
+        ZoneId zoneId = getTimezone(params);
+        LocalDate yesterday = getYesterdayDate(zoneId);
+        return String.format("Processing for %s (00:00 - 23:59 %s)", 
+            yesterday.format(DateTimeFormatter.ISO_DATE),
+            zoneId.getId());
+    }
+    
+    @Override
+    protected List<String> getEmailRecipients(JsonNode params) {
+        return extractListParam(params, "email.to");
+    }
+    
+    @Override
+    protected List<String> getEmailCcRecipients(JsonNode params) {
+        return extractListParam(params, "email.cc");
+    }
+    
+    @Override
+    protected List<String> getEmailBccRecipients(JsonNode params) {
+        return extractListParam(params, "email.bcc");
+    }
+    
+    @Override
+    protected String getFromEmail(JsonNode params) {
+        return extractString(params, "email.from", "noreply@company.com");
+    }
+    
+    @Override
+    protected String getFromName(JsonNode params) {
+        return extractString(params, "email.fromName", "Batch Monitoring System");
+    }
+    
+    @Override
+    protected String getAdditionalEmailContent(List<Object[]> rows, JsonNode params) {
+        StringBuilder additional = new StringBuilder();
+        
+        // Add summary metrics
+        Map<String, String> metrics = calculateSummaryMetrics(rows);
+        if (!metrics.isEmpty()) {
+            additional.append(createMetricsSummary(metrics));
+        }
+        
+        // Add alerts for failures
+        String alerts = generateAlerts(rows, params);
+        if (alerts != null) {
+            additional.append(alerts);
+        }
+        
+        return additional.toString();
+    }
+    
+    @Override
+    protected String getEmailFooterText(JsonNode params) {
+        return "This report is automatically generated. For issues, contact DevOps team.";
+    }
+    
+    // ========== PRIVATE HELPER METHODS ==========
+    
+    private List<Object[]> calculateSuccessRates(List<Object[]> rawData) {
+        List<Object[]> processed = new ArrayList<>();
+        
+        for (Object[] row : rawData) {
+            if (row.length >= 5) {
+                String jobName = (String) row[0];
+                int filesProcessed = safeInt(row[1]);
+                int completed = safeInt(row[2]);
+                int failed = safeInt(row[3]);
+                int inProgress = safeInt(row[4]);
+                
+                // Calculate success rate
+                double successRate = 0.0;
+                if (completed + failed > 0) {
+                    successRate = (double) completed / (completed + failed) * 100;
+                }
+                
+                Object[] processedRow = new Object[6];
+                processedRow[0] = jobName;
+                processedRow[1] = filesProcessed;
+                processedRow[2] = completed;
+                processedRow[3] = failed;
+                processedRow[4] = inProgress;
+                processedRow[5] = successRate; // Will be formatted by cell renderer
+                
+                processed.add(processedRow);
+            }
+        }
+        
+        // Sort by job name
+        processed.sort(Comparator.comparing(row -> (String) row[0]));
+        
+        return processed;
+    }
+    
+    private Map<String, String> calculateSummaryMetrics(List<Object[]> rows) {
+        Map<String, String> metrics = new LinkedHashMap<>();
+        
+        if (rows.isEmpty()) {
+            metrics.put("Total Jobs", "0");
+            metrics.put("Total Files", "0");
+            metrics.put("Success Rate", "N/A");
+            return metrics;
+        }
+        
+        int totalJobs = rows.size();
+        int totalFiles = 0;
+        int totalCompleted = 0;
+        int totalFailed = 0;
+        int totalInProgress = 0;
+        double totalSuccessRate = 0.0;
+        
+        for (Object[] row : rows) {
+            totalFiles += safeInt(row[1]);
+            totalCompleted += safeInt(row[2]);
+            totalFailed += safeInt(row[3]);
+            totalInProgress += safeInt(row[4]);
+            
+            // Parse success rate from formatted string or number
+            Object rateObj = row[5];
+            if (rateObj instanceof Number) {
+                totalSuccessRate += ((Number) rateObj).doubleValue();
+            }
+        }
+        
+        double avgSuccessRate = totalJobs > 0 ? totalSuccessRate / totalJobs : 0;
+        
+        metrics.put("Total Jobs", String.valueOf(totalJobs));
+        metrics.put("Total Files", formatNumber(String.valueOf(totalFiles)));
+        metrics.put("Completed", String.valueOf(totalCompleted));
+        metrics.put("Failed", String.valueOf(totalFailed));
+        metrics.put("In Progress", String.valueOf(totalInProgress));
+        metrics.put("Avg Success Rate", String.format("%.1f%%", avgSuccessRate));
+        
+        return metrics;
+    }
+    
+    private String generateAlerts(List<Object[]> rows, JsonNode params) {
+        if (rows.isEmpty()) {
+            return null;
+        }
+        
+        List<String> alertMessages = new ArrayList<>();
+        int failureThreshold = extractInt(params, "alerts.failureThreshold", 1);
+        double successRateThreshold = extractDouble(params, "alerts.successRateThreshold", 90.0);
+        
+        for (Object[] row : rows) {
+            String jobName = (String) row[0];
+            int failed = safeInt(row[3]);
+            double successRate = getSuccessRate(row[5]);
+            
+            if (failed >= failureThreshold) {
+                alertMessages.add(String.format("Job '%s' has %d failures", jobName, failed));
+            }
+            
+            if (successRate < successRateThreshold) {
+                alertMessages.add(String.format("Job '%s' success rate (%.1f%%) is below threshold (%.1f%%)", 
+                    jobName, successRate, successRateThreshold));
+            }
+        }
+        
+        if (alertMessages.isEmpty()) {
+            return null;
+        }
+        
+        return createAlert("Attention Required", 
+            String.join("<br>", alertMessages), 
+            EmailReportWrapper.AlertType.WARNING);
+    }
+    
+    private int safeInt(Object obj) {
+        if (obj == null) return 0;
+        if (obj instanceof Number) return ((Number) obj).intValue();
+        try {
+            return Integer.parseInt(obj.toString());
+        } catch (NumberFormatException e) {
+            return 0;
+        }
+    }
+    
+    private double getSuccessRate(Object rateObj) {
+        if (rateObj == null) return 0.0;
+        if (rateObj instanceof Number) return ((Number) rateObj).doubleValue();
+        
+        String rateStr = rateObj.toString().replace("%", "");
+        try {
+            return Double.parseDouble(rateStr);
+        } catch (NumberFormatException e) {
+            return 0.0;
+        }
+    }
+    
+    private static String formatNumber(String value) {
+        try {
+            long num = Long.parseLong(value.replaceAll(",", ""));
+            return String.format("%,d", num);
+        } catch (NumberFormatException e) {
+            return value;
+        }
+    }
+    
+    private int extractInt(JsonNode params, String paramPath, int defaultValue) {
+        JsonNode node = params.at("/" + paramPath.replace('.', '/'));
+        if (node != null && !node.isMissingNode() && node.isNumber()) {
+            return node.asInt();
+        }
+        return defaultValue;
+    }
+    
+    private double extractDouble(JsonNode params, String paramPath, double defaultValue) {
+        JsonNode node = params.at("/" + paramPath.replace('.', '/'));
+        if (node != null && !node.isMissingNode() && node.isNumber()) {
+            return node.asDouble();
+        }
+        return defaultValue;
+    }
+}   
+
+
+/**
+ * Example: System Health Report with completely different table structure
+ */
+@Service("SystemHealthMonitorTask")
+public class SystemHealthMonitorJobBuilder extends MonitoringJobBatchBuilder<Map<String, Object>> {
+    
+    // Different table headers for system health
+    private static final String[] TABLE_HEADERS = {
+        "Service Name", 
+        "Status", 
+        "Uptime", 
+        "CPU Usage", 
+        "Memory Usage", 
+        "Last Check"
+    };
+    
+    private static final String[] COLUMN_CLASSES = {
+        "service-name",
+        "status-cell",
+        "uptime-cell",
+        "cpu-cell",
+        "memory-cell",
+        "timestamp-cell"
+    };
+    
+    private final SystemHealthRepository systemHealthRepository;
+    
+    public SystemHealthMonitorJobBuilder(
+            EmailService emailService,
+            HtmlTableBuilder htmlTableBuilder,
+            EmailReportWrapper emailReportWrapper,
+            AppParameters appParameters,
+            EntityManager entityManager,
+            SystemHealthRepository systemHealthRepository) {
+        
+        super(emailService, htmlTableBuilder, emailReportWrapper, appParameters, entityManager);
+        this.systemHealthRepository = systemHealthRepository;
+    }
+    
+    @Override
+    protected List<Map<String, Object>> fetchRows(JsonNode params, BatchContext context) {
+        // Fetch system health data - completely different data structure
+        return systemHealthRepository.getSystemHealthStatus();
+    }
+    
+    @Override
+    protected HtmlTableBuilder.TableRequest buildTableRequest(List<Map<String, Object>> rows, JsonNode params) {
+        // Convert Map data to table rows
+        List<Object[]> tableRows = rows.stream()
+            .map(this::convertToTableRow)
+            .toList();
+        
+        // Cell renderer for status column
+        Map<Integer, Function<Object, String>> cellRenderers = new HashMap<>();
+        cellRenderers.put(1, value -> renderStatusBadge(value));
+        
+        return HtmlTableBuilder.TableRequest.builder()
+            .id("system-health-table")
+            .cssClass("system-health-table")
+            .headers(TABLE_HEADERS)
+            .rows(tableRows)
+            .columnClasses(COLUMN_CLASSES)
+            .cellRenderers(cellRenderers)
+            .caption("System Health Status")
+            .emptyMessage("No system health data available")
+            .build();
+    }
+    
+    @Override
+    protected String getEmailSubject(JsonNode params) {
+        return "System Health Report - " + LocalDate.now().format(DateTimeFormatter.ISO_DATE);
+    }
+    
+    @Override
+    protected String getEmailTitle(JsonNode params) {
+        return "System Health Monitoring Report";
+    }
+    
+    @Override
+    protected String getEmailSubtitle(JsonNode params) {
+        return "Current status of all monitored systems and services";
+    }
+    
+    @Override
+    protected List<String> getEmailRecipients(JsonNode params) {
+        return extractListParam(params, "recipients.system");
+    }
+    
+    // ... other required methods ...
+    
+    private Object[] convertToTableRow(Map<String, Object> data) {
+        return new Object[] {
+            data.get("serviceName"),
+            data.get("status"),
+            data.get("uptime"),
+            data.get("cpuUsage"),
+            data.get("memoryUsage"),
+            data.get("lastCheck")
+        };
+    }
+    
+    private String renderStatusBadge(Object status) {
+        String statusStr = status.toString();
+        String color = switch (statusStr.toLowerCase()) {
+            case "up", "healthy" -> "green";
+            case "warning", "degraded" -> "orange";
+            case "down", "error" -> "red";
+            default -> "gray";
+        };
+        return String.format("<span class=\"status-badge %s\">%s</span>", color, statusStr);
+    }
+}
