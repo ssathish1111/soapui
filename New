@@ -520,3 +520,155 @@ public abstract class MonitoringJobBatchBuilder<T> implements BatchBuilder {
     protected abstract TableRequest buildTableRequest(List<T> rows, JsonNode params);
     protected abstract String getEmailSubject(JsonNode params);
     protected a
+
+
+import com.fasterxml.jackson.databind.JsonNode;
+import java.util.*;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+public abstract class MonitoringJobBatchBuilder<T> implements BatchBuilder {
+    
+    protected final Logger log = LoggerFactory.getLogger(getClass());
+    
+    protected abstract List<T> fetchRows(JsonNode params, BatchContext context) throws Exception;
+    protected abstract TableRequest buildTableRequest(List<T> rows, JsonNode params);
+    protected abstract String getEmailSubject(JsonNode params);
+    protected abstract String getEmailTitle(JsonNode params);
+    protected abstract String getEmailSubtitle(JsonNode params);
+    protected abstract String getEmailintroMessage(JsonNode params, BatchContext context);
+    protected abstract List<String> getEmailRecipients(JsonNode params);
+    
+    protected List<String> getEmailCCRecipients(JsonNode params) {
+        return Collections.emptyList();
+    }
+    
+    protected List<String> getEmailBccRecipients(JsonNode params) {
+        return Collections.emptyList();
+    }
+    
+    protected String getFromEmail(JsonNode params) {
+        return "noreply@company.com";
+    }
+    
+    protected String getFromName(JsonNode params) {
+        return "Monitoring System";
+    }
+    
+    protected String getAdditionalEmailContent(List<T> rows, JsonNode params) {
+        return "";
+    }
+    
+    protected String getEmailFooterText(JsonNode params) {
+        return "This is an automated report. Please contact support for any questions.";
+    }
+    
+    // UPDATED EXECUTE METHOD WITH NEW DESIGN
+    @Override
+    public final boolean execute(BatchContext context) {
+        try {
+            log.info("Starting {} execution", getClass().getSimpleName());
+            
+            // Parse parameters
+            JsonNode params = ENSJsonUtil.getJsonFromString(context.getBatchJobConfig().getParametersList());
+            
+            // Fetch data rows
+            List<T> rows = fetchRows(params, context);
+            
+            // Build table request using the new design
+            TableRequest tableRequest = buildTableRequest(rows, params);
+            
+            // Create EmailBuilder instance
+            EmailBuilder emailBuilder = new EmailBuilder();
+            
+            // Build table HTML with new attractive design
+            String tableHtml = emailBuilder.buildTable(tableRequest);
+            
+            // Get email components
+            String emailTitle = getEmailTitle(params);
+            String emailSubtitle = getEmailSubtitle(params);
+            String introMessage = getEmailintroMessage(params, context);
+            String footerText = getEmailFooterText(params);
+            
+            // Build sections if needed
+            List<Section> sections = new ArrayList<>();
+            Section tableSection = new Section(tableHtml);
+            sections.add(tableSection);
+            
+            // Get additional content if any
+            String additionalHtml = getAdditionalEmailContent(rows, params);
+            
+            // Build complete email HTML with attractive design
+            String emailHtml = emailBuilder.buildEmailHtml(
+                emailTitle,
+                emailSubtitle,
+                introMessage,
+                sections,
+                additionalHtml,
+                footerText
+            );
+            
+            // Get recipient information
+            List<String> recipients = getEmailRecipients(params);
+            List<String> ccRecipients = getEmailCCRecipients(params);
+            List<String> bccRecipients = getEmailBccRecipients(params);
+            String fromEmail = getFromEmail(params);
+            String fromName = getFromName(params);
+            String subject = getEmailSubject(params);
+            
+            // Send the email (implement your email sending logic here)
+            sendEmail(subject, emailHtml, recipients, ccRecipients, bccRecipients, fromEmail, fromName);
+            
+            log.info("Completed {} execution successfully", getClass().getSimpleName());
+            return true;
+            
+        } catch (Exception e) {
+            log.error("Error executing batch job", e);
+            return false;
+        }
+    }
+    
+    // Email sending method - implement based on your email service
+    protected void sendEmail(String subject, String htmlContent, 
+                           List<String> to, List<String> cc, List<String> bcc,
+                           String fromEmail, String fromName) {
+        try {
+            log.info("Sending email with subject: {}", subject);
+            log.info("To: {}", to);
+            log.info("CC: {}", cc);
+            log.info("BCC: {}", bcc);
+            log.info("From: {} <{}>", fromName, fromEmail);
+            
+            // TODO: Implement your email sending logic here
+            // Example: emailService.sendHtmlEmail(subject, htmlContent, to, cc, bcc, fromEmail, fromName);
+            
+        } catch (Exception e) {
+            log.error("Failed to send email", e);
+        }
+    }
+    
+    // Utility methods
+    protected List<String> extractListParam(JsonNode params, String paramPath) {
+        JsonNode node = params.at("/" + paramPath.replace('.', '/'));
+        if (node == null || node.isMissingNode()) {
+            return Collections.emptyList();
+        }
+        if (node.isArray()) {
+            List<String> result = new ArrayList<>();
+            node.forEach(item -> result.add(item.asText()));
+            return result;
+        }
+        return Arrays.stream(node.asText().split(","))
+            .map(String::trim)
+            .filter(s -> !s.isEmpty())
+            .toList();
+    }
+    
+    protected String extractString(JsonNode params, String paramPath, String defaultValue) {
+        JsonNode node = params.at("/" + paramPath.replace('.', '/'));
+        if (node != null && !node.isMissingNode() && node.isTextual()) {
+            return node.asText();
+        }
+        return defaultValue;
+    }
+}
