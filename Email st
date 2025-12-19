@@ -1,0 +1,335 @@
+Here's an improved email structure with a cleaner, more professional design:
+
+1. Updated Email HTML Structure (for buildEmailHtml method):
+
+```java
+public String buildEmailHtml(
+    String title,
+    String subtitle,
+    String introMessage,
+    List<Section> sections,
+    String additionalHtml,
+    String footer
+) {
+    StringBuilder body = new StringBuilder();
+    String introHtml = (introMessage != null && !introMessage.isBlank()) ? introMessage : null;
+
+    body.append(""" 
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>""").append(title).append("""</title>
+        <style>
+            body {
+                font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+                color: #333333;
+                margin: 0;
+                padding: 0;
+                background-color: #f5f7fa;
+                line-height: 1.6;
+            }
+            
+            .email-container {
+                max-width: 700px;
+                margin: 0 auto;
+                background: white;
+                border-radius: 12px;
+                overflow: hidden;
+                box-shadow: 0 4px 20px rgba(0, 0, 0, 0.08);
+            }
+            
+            .email-header {
+                background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                color: white;
+                padding: 28px 32px;
+                text-align: center;
+            }
+            
+            .email-header h1 {
+                margin: 0 0 8px 0;
+                font-size: 26px;
+                font-weight: 600;
+                letter-spacing: -0.5px;
+            }
+            
+            .email-header .subtitle {
+                margin: 0;
+                opacity: 0.9;
+                font-size: 15px;
+                font-weight: 400;
+            }
+            
+            .email-content {
+                padding: 32px;
+            }
+            
+            .intro-message {
+                background: #f8f9ff;
+                border-left: 4px solid #667eea;
+                padding: 16px 20px;
+                margin: 0 0 24px 0;
+                border-radius: 0 8px 8px 0;
+                color: #2d3748;
+                font-size: 15px;
+            }
+            
+            .section {
+                margin-bottom: 32px;
+            }
+            
+            .section-title {
+                font-size: 18px;
+                font-weight: 600;
+                color: #2d3748;
+                margin: 0 0 16px 0;
+                padding-bottom: 8px;
+                border-bottom: 2px solid #edf2f7;
+            }
+            
+            .email-footer {
+                padding: 20px 32px;
+                border-top: 1px solid #e2e8f0;
+                color: #718096;
+                font-size: 13px;
+                text-align: center;
+                background: #f7fafc;
+            }
+            
+            .stats-highlight {
+                display: flex;
+                justify-content: space-around;
+                margin: 24px 0;
+                padding: 20px;
+                background: linear-gradient(135deg, #f6f9ff 0%, #f0f4ff 100%);
+                border-radius: 10px;
+                border: 1px solid #e2e8f0;
+            }
+            
+            .stat-item {
+                text-align: center;
+                padding: 0 15px;
+            }
+            
+            .stat-value {
+                font-size: 32px;
+                font-weight: 700;
+                color: #667eea;
+                margin-bottom: 4px;
+            }
+            
+            .stat-label {
+                font-size: 13px;
+                color: #4a5568;
+                text-transform: uppercase;
+                letter-spacing: 0.5px;
+            }
+            
+            @media only screen and (max-width: 600px) {
+                .email-container {
+                    border-radius: 0;
+                    box-shadow: none;
+                }
+                
+                .email-header, .email-content {
+                    padding: 24px 20px;
+                }
+                
+                .stats-highlight {
+                    flex-direction: column;
+                    gap: 20px;
+                }
+            }
+        </style>
+    </head>
+    <body>
+        <div class="email-container">
+            <div class="email-header">
+                <h1>""").append(title).append("""</h1>""");
+    
+    if (subtitle != null && !subtitle.isBlank()) {
+        body.append("""
+                <div class="subtitle">""").append(subtitle).append("""</div>
+                """);
+    }
+    
+    body.append("""
+            </div>
+            <div class="email-content">""");
+    
+    if (introHtml != null) {
+        body.append("""
+                <div class="intro-message">""").append(introHtml).append("""</div>
+                """);
+    }
+    
+    if (sections != null) {
+        for (Section s : sections) {
+            body.append("""
+                <div class="section">
+                    <h3 class="section-title">""").append(s.getTitle()).append("""</h3>
+                    """).append(s.getHtml()).append("""
+                </div>
+                """);
+        }
+    }
+    
+    if (additionalHtml != null && !additionalHtml.isBlank()) {
+        body.append(additionalHtml);
+    }
+    
+    body.append("""
+            </div>
+            <div class="email-footer">
+                """).append(footer).append("""
+            </div>
+        </div>
+    </body>
+    </html>
+    """);
+    
+    return body.toString();
+}
+```
+
+2. Enhanced Table Builder (for buildTable method):
+
+```java
+public String buildTable(TableRequest request) {
+    validateRequest(request);
+    
+    List<Object[]> rows = request.getRows();
+    boolean hasRows = rows != null && !rows.isEmpty();
+    String[] headers = request.getHeaders();
+    
+    String idAttr = StringUtils.hasText(request.getId()) ? " id=\"" + escape(request.getId()) + "\"" : "";
+    String classAttr = StringUtils.hasText(request.getCssClass()) ? " class=\"" + escape(request.getCssClass()) + "\"" : "";
+    
+    StringBuilder table = new StringBuilder(2048);
+    
+    table.append("<table")
+        .append(idAttr)
+        .append(classAttr)
+        .append(" style=\"width:100%; border-collapse:separate; border-spacing:0; background:#fff; margin:24px 0; border-radius:8px; overflow:hidden; box-shadow:0 2px 8px rgba(0,0,0,0.05);\">\n");
+    
+    if (StringUtils.hasText(request.getCaption())) {
+        table.append("<caption style=\"caption-side:top; font-size:14px; color:#718096; padding:12px 16px; text-align:left; background:#f7fafc; border-bottom:1px solid #e2e8f0;\">")
+            .append(escape(request.getCaption()))
+            .append("</caption>\n");
+    }
+    
+    if (headers != null && headers.length > 0) {
+        table.append("<thead>\n<tr>\n");
+        for (String h : headers) {
+            table.append("<th style=\"background:linear-gradient(135deg, #667eea 0%, #764ba2 100%); text-align:left; font-weight:600; color:white; padding:16px; border-bottom:2px solid #553c9a; font-size:14px; text-transform:uppercase; letter-spacing:0.5px;\">")
+                .append(escape(h))
+                .append("</th>\n");
+        }
+        table.append("</tr>\n</thead>\n");
+    }
+    
+    table.append("<tbody>\n");
+    
+    if (!hasRows) {
+        int colspan = (headers != null && headers.length > 0) ? headers.length : 1;
+        table.append("<tr><td colspan=\"")
+            .append(colspan)
+            .append("\" style=\"text-align:center; color:#a0aec0; padding:48px 16px; font-style:italic; font-size:15px; background:#fafbff;\">")
+            .append(escape(defaultString(request.getEmptyMessage(), "No data available")))
+            .append("</td></tr>\n");
+    } else {
+        int rowIndex = 0;
+        for (Object[] row : rows) {
+            String rowBg = rowIndex % 2 == 0 ? "#ffffff" : "#fafbff";
+            table.append("<tr style=\"background-color:").append(rowBg).append(";\">\n");
+            
+            if (row != null) {
+                for (Object cell : row) {
+                    // Check if cell contains status indicators
+                    String cellStyle = "border-bottom:1px solid #edf2f7; padding:14px 16px; font-size:14px; color:#2d3748;";
+                    
+                    if (cell != null) {
+                        String cellStr = cell.toString().toLowerCase();
+                        if (cellStr.contains("failed") || cellStr.contains("error")) {
+                            cellStyle += "color:#e53e3e; font-weight:600;";
+                        } else if (cellStr.contains("completed") || cellStr.contains("success")) {
+                            cellStyle += "color:#38a169; font-weight:600;";
+                        } else if (cellStr.contains("progress")) {
+                            cellStyle += "color:#d69e2e; font-weight:600;";
+                        }
+                    }
+                    
+                    table.append("<td style=\"").append(cellStyle).append("\">")
+                        .append(cell == null ? "—" : escape(cell.toString()))
+                        .append("</td>\n");
+                }
+            }
+            table.append("</tr>\n");
+            rowIndex++;
+        }
+    }
+    
+    table.append("</tbody>\n</table>\n");
+    return table.toString();
+}
+```
+
+3. Key Improvements Made:
+
+Visual Enhancements:
+
+1. Modern gradient header with better typography
+2. Soft shadow and rounded corners for cards/containers
+3. Clean table design with:
+   · Gradient headers
+   · Subtle zebra striping
+   · Status color coding (green for success, red for failed, yellow for in-progress)
+   · Proper spacing and padding
+   · Rounded corners for tables
+
+Functional Improvements:
+
+1. Mobile responsive design with media queries
+2. Better section organization with clear titles
+3. Stats highlight section option for key metrics
+4. Improved typography with better font stack
+5. Professional color palette (blues, purples, grays)
+
+Additional Suggestions for Email Content:
+
+Add this optional stats section before your tables:
+
+```java
+// Add stats highlight section
+String statsHtml = """
+    <div class="stats-highlight">
+        <div class="stat-item">
+            <div class="stat-value">24</div>
+            <div class="stat-label">Total Jobs</div>
+        </div>
+        <div class="stat-item">
+            <div class="stat-value" style="color:#38a169;">22</div>
+            <div class="stat-label">Completed</div>
+        </div>
+        <div class="stat-item">
+            <div class="stat-value" style="color:#e53e3e;">1</div>
+            <div class="stat-label">Failed</div>
+        </div>
+        <div class="stat-item">
+            <div class="stat-value" style="color:#d69e2e;">1</div>
+            <div class="stat-label">In Progress</div>
+        </div>
+    </div>
+    """;
+```
+
+This design provides:
+
+· Professional appearance suitable for business emails
+· Excellent readability with proper hierarchy
+· Responsive design that works on mobile devices
+· Clear visual status indicators (color-coded)
+· Modern, clean aesthetic that looks current and professional
+
+The email will now have a polished, dashboard-like appearance that effectively communicates batch job status while being visually appealing.
