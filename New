@@ -1,0 +1,522 @@
+I'll update your existing code to implement the new attractive design. Based on your current implementation, I'll modify the key parts to incorporate the professional look.
+
+1. First, create the EmailBuilder.java (put this in your project):
+
+```java
+import java.util.List;
+
+public class EmailBuilder {
+    
+    // =============== MAIN EMAIL BUILDING METHOD ===============
+    
+    public String buildEmailHtml(
+        String title,
+        String subtitle,
+        String introMessage,
+        List<Section> sections,
+        String additionalHtml,
+        String footer
+    ) {
+        StringBuilder body = new StringBuilder();
+        String introHtml = (introMessage != null && !introMessage.isBlank()) ? introMessage : null;
+
+        body.append(""" 
+            <!DOCTYPE html>
+            <html>
+            <head>
+                <meta charset="UTF-8">
+                <meta name="viewport" content="width=device-width, initial-scale=1.0">
+                <title>""").append(title).append("""</title>
+                <style>
+                    body {
+                        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+                        color: #333333;
+                        margin: 0;
+                        padding: 20px;
+                        background-color: #f5f7fa;
+                        line-height: 1.6;
+                    }
+                    
+                    .email-container {
+                        max-width: 900px;
+                        margin: 0 auto;
+                        background: white;
+                        border-radius: 8px;
+                        overflow: hidden;
+                        box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+                    }
+                    
+                    .email-header {
+                        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                        color: white;
+                        padding: 20px 25px;
+                    }
+                    
+                    .email-header h1 {
+                        margin: 0 0 5px 0;
+                        font-size: 22px;
+                        font-weight: 600;
+                    }
+                    
+                    .email-header .subtitle {
+                        margin: 0;
+                        opacity: 0.9;
+                        font-size: 14px;
+                        font-weight: 400;
+                    }
+                    
+                    .email-content {
+                        padding: 25px;
+                    }
+                    
+                    .email-footer {
+                        padding: 15px 25px;
+                        border-top: 1px solid #e2e8f0;
+                        color: #718096;
+                        font-size: 12px;
+                        text-align: center;
+                        background: #f7fafc;
+                    }
+                    
+                    .status-badge {
+                        display: inline-block;
+                        padding: 3px 10px;
+                        border-radius: 12px;
+                        font-size: 12px;
+                        font-weight: 600;
+                    }
+                    
+                    .status-success {
+                        background-color: #d1fae5;
+                        color: #065f46;
+                    }
+                    
+                    .status-failed {
+                        background-color: #fee2e2;
+                        color: #991b1b;
+                    }
+                    
+                    .status-inprogress {
+                        background-color: #fef3c7;
+                        color: #92400e;
+                    }
+                    
+                    .status-pending {
+                        background-color: #e2e8f0;
+                        color: #2d3748;
+                    }
+                    
+                    @media only screen and (max-width: 600px) {
+                        body {
+                            padding: 10px;
+                        }
+                        
+                        .email-header, .email-content {
+                            padding: 15px 20px;
+                        }
+                    }
+                </style>
+            </head>
+            <body>
+                <div class="email-container">
+                    <div class="email-header">
+                        <h1>""").append(title).append("""</h1>""");
+
+        if (subtitle != null && !subtitle.isBlank()) {
+            body.append("""
+                    <div class="subtitle">""").append(subtitle).append("""</div>
+                    """);
+        }
+
+        body.append("""
+                </div>
+                <div class="email-content">""");
+
+        if (introHtml != null) {
+            body.append("""
+                    <div class="intro-message" style="background: #f8f9ff; border-left: 4px solid #667eea; padding: 12px 16px; margin: 0 0 20px 0; border-radius: 0 8px 8px 0; color: #2d3748; font-size: 14px;">""")
+                .append(introHtml).append("""</div>
+                    """);
+        }
+
+        // Directly append sections without titles
+        if (sections != null) {
+            for (Section s : sections) {
+                body.append(s.getHtml());
+            }
+        }
+
+        if (additionalHtml != null && !additionalHtml.isBlank()) {
+            body.append(additionalHtml);
+        }
+
+        body.append("""
+                </div>
+                <div class="email-footer">
+                    """).append(footer).append("""
+                </div>
+            </div>
+            </body>
+            </html>
+            """);
+
+        return body.toString();
+    }
+    
+    // =============== TABLE BUILDING METHOD ===============
+    
+    public String buildTable(TableRequest request) {
+        validateRequest(request);
+        
+        List<Object[]> rows = request.getRows();
+        boolean hasRows = rows != null && !rows.isEmpty();
+        String[] headers = request.getHeaders();
+        
+        String idAttr = hasText(request.getId()) ? " id=\"" + escape(request.getId()) + "\"" : "";
+        String classAttr = hasText(request.getCssClass()) ? " class=\"" + escape(request.getCssClass()) + "\"" : "";
+        
+        StringBuilder table = new StringBuilder(2048);
+        
+        table.append("<table")
+            .append(idAttr)
+            .append(classAttr)
+            .append(" style=\"width:100%; border-collapse:collapse; border:1px solid #e2e8f0; background:#fff; margin:0;\">\n");
+        
+        if (hasText(request.getCaption())) {
+            table.append("<caption style=\"caption-side:top; font-size:14px; color:#4a5568; padding:12px 15px; text-align:left; background:#f7fafc; border-bottom:1px solid #e2e8f0;\">")
+                .append(escape(request.getCaption()))
+                .append("</caption>\n");
+        }
+        
+        if (headers != null && headers.length > 0) {
+            table.append("<thead>\n<tr>\n");
+            for (String h : headers) {
+                table.append("<th style=\"background:#edf2f7; text-align:left; font-weight:600; color:#2d3748; padding:12px 15px; border-bottom:2px solid #cbd5e0; font-size:13px;\">")
+                    .append(escape(h))
+                    .append("</th>\n");
+            }
+            table.append("</tr>\n</thead>\n");
+        }
+        
+        table.append("<tbody>\n");
+        
+        if (!hasRows) {
+            int colspan = (headers != null && headers.length > 0) ? headers.length : 1;
+            table.append("<tr><td colspan=\"")
+                .append(colspan)
+                .append("\" style=\"text-align:center; color:#a0aec0; padding:40px 15px; font-style:italic; font-size:14px; border-bottom:1px solid #e2e8f0;\">")
+                .append(escape(defaultString(request.getEmptyMessage(), "No data available")))
+                .append("</td></tr>\n");
+        } else {
+            for (int i = 0; i < rows.size(); i++) {
+                Object[] row = rows.get(i);
+                String bgColor = i % 2 == 0 ? "#ffffff" : "#f8fafc";
+                table.append("<tr style=\"background-color:").append(bgColor).append(";\">\n");
+                
+                if (row != null) {
+                    for (int j = 0; j < row.length; j++) {
+                        Object cell = row[j];
+                        String cellStyle = "padding:10px 15px; border-bottom:1px solid #e2e8f0; font-size:13px; color:#4a5568;";
+                        
+                        table.append("<td style=\"").append(cellStyle).append("\">");
+                        
+                        if (cell != null) {
+                            String cellStr = cell.toString();
+                            // Apply status badges for specific columns
+                            if (headers != null && j < headers.length && 
+                                (headers[j].toLowerCase().contains("status") || 
+                                 headers[j].toLowerCase().contains("completed") ||
+                                 headers[j].toLowerCase().contains("failed") ||
+                                 headers[j].toLowerCase().contains("progress"))) {
+                                
+                                if (cellStr.toLowerCase().contains("completed") || cellStr.toLowerCase().contains("success")) {
+                                    table.append("<span class=\"status-badge status-success\" style=\"display:inline-block; padding:3px 10px; border-radius:12px; font-size:12px; font-weight:600; background-color:#d1fae5; color:#065f46;\">")
+                                        .append(escape(cellStr))
+                                        .append("</span>");
+                                } else if (cellStr.toLowerCase().contains("failed") || cellStr.toLowerCase().contains("error")) {
+                                    table.append("<span class=\"status-badge status-failed\" style=\"display:inline-block; padding:3px 10px; border-radius:12px; font-size:12px; font-weight:600; background-color:#fee2e2; color:#991b1b;\">")
+                                        .append(escape(cellStr))
+                                        .append("</span>");
+                                } else if (cellStr.toLowerCase().contains("progress") || cellStr.toLowerCase().contains("running")) {
+                                    table.append("<span class=\"status-badge status-inprogress\" style=\"display:inline-block; padding:3px 10px; border-radius:12px; font-size:12px; font-weight:600; background-color:#fef3c7; color:#92400e;\">")
+                                        .append(escape(cellStr))
+                                        .append("</span>");
+                                } else if (cellStr.toLowerCase().contains("pending") || cellStr.toLowerCase().contains("waiting")) {
+                                    table.append("<span class=\"status-badge status-pending\" style=\"display:inline-block; padding:3px 10px; border-radius:12px; font-size:12px; font-weight:600; background-color:#e2e8f0; color:#2d3748;\">")
+                                        .append(escape(cellStr))
+                                        .append("</span>");
+                                } else {
+                                    table.append(escape(cellStr));
+                                }
+                            } else {
+                                table.append(escape(cellStr));
+                            }
+                        } else {
+                            table.append("—");
+                        }
+                        
+                        table.append("</td>\n");
+                    }
+                }
+                table.append("</tr>\n");
+            }
+        }
+        
+        table.append("</tbody>\n</table>\n");
+        return table.toString();
+    }
+    
+    // =============== SIMPLIFIED TABLE-ONLY EMAIL METHOD ===============
+    
+    public String buildTableOnlyEmail(
+        String title,
+        String subtitle,
+        String tableHtml,
+        String footer
+    ) {
+        StringBuilder body = new StringBuilder();
+        
+        body.append(""" 
+            <!DOCTYPE html>
+            <html>
+            <head>
+                <meta charset="UTF-8">
+                <meta name="viewport" content="width=device-width, initial-scale=1.0">
+                <title>""").append(title).append("""</title>
+                <style>
+                    body {
+                        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+                        color: #333333;
+                        margin: 0;
+                        padding: 20px;
+                        background-color: #f5f7fa;
+                        line-height: 1.6;
+                    }
+                    
+                    .email-container {
+                        max-width: 900px;
+                        margin: 0 auto;
+                        background: white;
+                        border-radius: 8px;
+                        overflow: hidden;
+                        box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+                    }
+                    
+                    .email-header {
+                        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                        color: white;
+                        padding: 20px 25px;
+                    }
+                    
+                    .email-header h1 {
+                        margin: 0 0 5px 0;
+                        font-size: 22px;
+                        font-weight: 600;
+                    }
+                    
+                    .email-header .subtitle {
+                        margin: 0;
+                        opacity: 0.9;
+                        font-size: 14px;
+                        font-weight: 400;
+                    }
+                    
+                    .email-content {
+                        padding: 25px;
+                    }
+                    
+                    .email-footer {
+                        padding: 15px 25px;
+                        border-top: 1px solid #e2e8f0;
+                        color: #718096;
+                        font-size: 12px;
+                        text-align: center;
+                        background: #f7fafc;
+                    }
+                    
+                    .status-badge {
+                        display: inline-block;
+                        padding: 3px 10px;
+                        border-radius: 12px;
+                        font-size: 12px;
+                        font-weight: 600;
+                    }
+                    
+                    .status-success {
+                        background-color: #d1fae5;
+                        color: #065f46;
+                    }
+                    
+                    .status-failed {
+                        background-color: #fee2e2;
+                        color: #991b1b;
+                    }
+                    
+                    .status-inprogress {
+                        background-color: #fef3c7;
+                        color: #92400e;
+                    }
+                    
+                    @media only screen and (max-width: 600px) {
+                        body {
+                            padding: 10px;
+                        }
+                        
+                        .email-header, .email-content {
+                            padding: 15px 20px;
+                        }
+                    }
+                </style>
+            </head>
+            <body>
+                <div class="email-container">
+                    <div class="email-header">
+                        <h1>""").append(title).append("""</h1>""");
+        
+        if (subtitle != null && !subtitle.isBlank()) {
+            body.append("""
+                    <div class="subtitle">""").append(subtitle).append("""</div>
+                    """);
+        }
+        
+        body.append("""
+                </div>
+                <div class="email-content">
+                    """).append(tableHtml).append("""
+                </div>
+                <div class="email-footer">
+                    """).append(footer).append("""
+                </div>
+            </div>
+            </body>
+            </html>
+            """);
+        
+        return body.toString();
+    }
+    
+    // =============== UTILITY METHODS ===============
+    
+    private void validateRequest(TableRequest request) {
+        if (request == null) {
+            throw new IllegalArgumentException("Table request cannot be null");
+        }
+        if (request.getRows() == null) {
+            throw new IllegalArgumentException("Table request 'rows' cannot be null (use empty list if no rows)");
+        }
+    }
+    
+    public static String escape(String input) {
+        if (input == null) return "";
+        return input.replace("&", "&amp;")
+                   .replace("<", "&lt;")
+                   .replace(">", "&gt;")
+                   .replace("\"", "&quot;")
+                   .replace("'", "&#39;");
+    }
+    
+    private boolean hasText(String str) {
+        return str != null && !str.trim().isEmpty();
+    }
+    
+    private String defaultString(String str, String defaultStr) {
+        return str != null && !str.trim().isEmpty() ? str : defaultStr;
+    }
+}
+
+// =============== SUPPORTING CLASSES ===============
+
+class TableRequest {
+    private String id;
+    private String cssClass;
+    private String caption;
+    private String[] headers;
+    private List<Object[]> rows;
+    private String emptyMessage;
+    
+    // Builder pattern
+    public static Builder builder() {
+        return new Builder();
+    }
+    
+    // Getters
+    public String getId() { return id; }
+    public String getCssClass() { return cssClass; }
+    public String getCaption() { return caption; }
+    public String[] getHeaders() { return headers; }
+    public List<Object[]> getRows() { return rows; }
+    public String getEmptyMessage() { return emptyMessage; }
+    
+    // Builder class
+    public static class Builder {
+        private final TableRequest request = new TableRequest();
+        
+        public Builder id(String id) {
+            request.id = id;
+            return this;
+        }
+        
+        public Builder cssClass(String cssClass) {
+            request.cssClass = cssClass;
+            return this;
+        }
+        
+        public Builder caption(String caption) {
+            request.caption = caption;
+            return this;
+        }
+        
+        public Builder headers(String[] headers) {
+            request.headers = headers;
+            return this;
+        }
+        
+        public Builder rows(List<Object[]> rows) {
+            request.rows = rows;
+            return this;
+        }
+        
+        public Builder emptyMessage(String emptyMessage) {
+            request.emptyMessage = emptyMessage;
+            return this;
+        }
+        
+        public TableRequest build() {
+            return request;
+        }
+    }
+}
+
+class Section {
+    private String html;
+    
+    public Section(String html) {
+        this.html = html;
+    }
+    
+    public String getHtml() {
+        return html;
+    }
+    
+    public void setHtml(String html) {
+        this.html = html;
+    }
+}
+```
+
+2. Update your MonitoringJobBatchBuilder.java:
+
+```java
+import com.fasterxml.jackson.databind.JsonNode;
+import java.util.*;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+public abstract class MonitoringJobBatchBuilder<T> implements BatchBuilder {
+    
+    protected final Logger log = LoggerFactory.getLogger(getClass());
+    
+    protected abstract List<T> fetchRows(JsonNode params, BatchContext context) throws Exception;
+    protected abstract TableRequest buildTableRequest(List<T> rows, JsonNode params);
+    protected abstract String getEmailSubject(JsonNode params);
+    protected a
