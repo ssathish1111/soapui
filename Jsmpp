@@ -1,0 +1,405 @@
+I'll update the code to use jSMPP instead of CloudHopper SMPP. Here's the refactored version:
+
+```java
+import org.jsmpp.bean.*;
+import org.jsmpp.session.*;
+import org.jsmpp.extra.*;
+import lombok.extern.slf4j.Slf4j;
+import java.util.concurrent.TimeUnit;
+
+@Slf4j
+public class SmppConnection {
+    private final SMPPSession session;
+    private final SmppConfig config;
+    private final int unbindTimeoutMs;
+
+    public SmppConnection(SmppConfig config, int unbindTimeoutMs) {
+        this.config = config;
+        this.unbindTimeoutMs = unbindTimeoutMs;
+        this.session = new SMPPSession();
+    }
+
+    public void open() throws Exception {
+        if (isHealthy()) return;
+        
+        session.connectAndBind(
+            config.getHost(),
+            config.getPort(),
+            new BindParameter(
+                BindType.BIND_TRX,
+                config.getSystemId(),
+                config.getPassword(),
+                config.getSystemType(),
+                TypeOfNumber.UNKNOWN,
+                NumberingPlanIndicator.UNKNOWN,
+                null
+            ),
+            5000 // 5 seconds timeout for connect and bind
+        );
+        log.info("SMPP session bound: {}:{}", config.getHost(), config.getPort());
+    }
+
+    public void close() {
+        if (session != null) {
+            try {
+                if (session.getSessionState().isBound()) {
+                    session.unbindAndClose();
+                } else {
+                    session.close();
+                }
+                log.info("SMPP session closed: {}:{}", config.getHost(), config.getPort());
+            } catch (Exception e) {
+                log.warn("Error closing SMPP session", e);
+            }
+        }
+    }
+
+    public boolean isHealthy() {
+        return session != null && 
+               session.getSessionState().isBound() && 
+               !session.getSessionState().isClosed();
+    }
+
+    public SubmitSmResp send(String message, String sourceAddr, String destAddr) 
+            throws Exception {
+        if (!isHealthy()) {
+            throw new IllegalStateException("SMPP session not healthy");
+        }
+        
+        return session.submitShortMessage(
+            "CMT",
+            TypeOfNumber.INTERNATIONAL, NumberingPlanIndicator.ISDN, sourceAddr,
+            TypeOfNumber.INTERNATIONAL, NumberingPlanIndicator.ISDN, destAddr,
+            new ESMClass(),
+            (byte) 0, (byte) 1, null, null,
+            new RegisteredDelivery(SMSCDeliveryReceipt.DEFAULT),
+            (byte) 0,
+            new GeneralDataCoding(Alphabet.ALPHA_DEFAULT),
+            (byte) 0,
+            message.getBytes("ISO-8859-1")
+        );
+    }
+
+    // Send EnquireLink to keep the session alive
+    public void enquireLink() {
+        if (isHealthy()) {
+            try {
+                session.enquireLink(new EnquireLink(), 1000);
+            } catch (Exception e) {
+                log.error("EnquireLink failed: {}", e.getMessage());
+            }
+        }
+    }
+}
+```
+
+```java
+import java.util.concurrent.*;
+import java.util.concurrent.atomic.AtomicInteger;
+import lombok.extern.slf4j.Slf4j;
+
+@Slf4j
+public class SmppConnectionPool {
+    private final String serverName;
+    private final BlockingQueue<SmppConnection> pool;
+    private final PoolFactory factory;
+    private final SmppPoolConfig config;
+    private final ScheduledExecutorService keepAliveScheduler;
+
+    public SmppConnectionPool(PoolFactory factory, int maxSize, 
+                            String serverName, SmppPoolConfig config) throws Exception {
+        this.pool = new LinkedBlockingQueue<>(maxSize);
+        this.serverName = serverName;
+        this.factory = factory;
+        this.config = config;
+        this.keepAliveScheduler = Executors.newSingleThreadScheduledExecutor();
+        
+        for (int i = 0; i < maxSize; i++) {
+            SmppConnection conn = factory.create();
+            conn.open();
+            pool.offer(conn);
+        }
+        startKeepAliveTask();
+    }
+
+    private void startKeepAliveTask() {
+        keepAliveScheduler.scheduleAtFixedRate(() -> {
+            log.debug("SMPP keepalive task running for server: {}", serverName);
+            for (SmppConnection conn : pool) {
+                try {
+                    if (conn.isHealthy()) {
+                        conn.enquireLink();
+                    }
+                } catch (Exception e) {
+                    log.error("Error during SMPP keepalive enquireLink", e);
+                }
+            }
+        }, config.getKeepAliveInitialDelaySecs(), 
+           config.getKeepAlivePeriodSecs(), 
+           TimeUnit.SECONDS);
+    }
+
+    public SmppConnection borrow(long timeout) throws InterruptedException {
+        SmppConnection conn = pool.poll(timeout, TimeUnit.MILLISECONDS);
+        if (conn == null) {
+            throw new RuntimeException("All SMPP connections for server " + 
+                                     serverName + " are busy");
+        }
+        
+        if (!conn.isHealthy()) {
+            conn.close();
+            try {
+                conn = factory.create();
+                conn.open();
+            } catch (Exception e) {
+                throw new RuntimeException("Failed to recreate SMPP connection for server " + 
+                                         serverName, e);
+            }
+        }
+        return conn;
+    }
+
+    public void release(SmppConnection conn) {
+        if (conn.isHealthy()) {
+            pool.offer(conn);
+        } else {
+            try {
+                conn.close();
+                SmppConnection newConn = factory.create();
+                newConn.open();
+                pool.offer(newConn);
+            } catch (Exception e) {
+                log.error("Failed to replace broken SMPP connection", e);
+            }
+        }
+    }
+
+    public void shutdown() {
+        keepAliveScheduler.shutdown();
+        for (SmppConnection c : pool) {
+            c.close();
+        }
+        pool.clear();
+    }
+
+    public boolean isHealthy() {
+        for (SmppConnection c : pool) {
+            if (!c.isHealthy()) return false;
+        }
+        return true;
+    }
+
+    public interface PoolFactory {
+        SmppConnection create() throws Exception;
+    }
+}
+```
+
+```java
+import org.jsmpp.bean.*;
+import lombok.extern.slf4j.Slf4j;
+import java.util.*;
+import java.util.concurrent.atomic.AtomicInteger;
+
+@Slf4j
+public class SmppMessageSender {
+    private final SmppConfig globalConfig;
+    private final SshTunnelManager tunnelManager;
+    private final SmppPoolGroup poolGroup;
+
+    public SmppMessageSender(SmppConfig globalConfig) throws Exception {
+        this.globalConfig = globalConfig;
+        this.tunnelManager = new SshTunnelManager(globalConfig);
+        this.tunnelManager.open();
+
+        List<SmppConnectionPool> pools = new ArrayList<>();
+        for (SmppServerConfig server : globalConfig.getServers()) {
+            SmppConfig smppConfig = buildSessionConfig(server, globalConfig);
+            SmppConnectionPool.PoolFactory factory = () -> 
+                new SmppConnection(smppConfig, globalConfig.getSmppUnbindTimeoutMs());
+            pools.add(new SmppConnectionPool(factory, server.getPoolSize(), 
+                                           server.getName(), globalConfig.getPoolConfig()));
+        }
+        this.poolGroup = new SmppPoolGroup(pools);
+    }
+
+    private SmppConfig buildSessionConfig(SmppServerConfig server, SmppConfig globalConfig) {
+        return new SmppConfig(
+            "localhost", // Localhost because we use SSH tunnel
+            server.getLocalPort(),
+            globalConfig.getSystemId(),
+            globalConfig.getPassword(),
+            globalConfig.getSystemType()
+        );
+    }
+
+    public SmppSendResult sendMessage(String phoneNumber, String shortCode, 
+                                    String message) {
+        SmppConnection conn = null;
+        String attemptedServer = null;
+        
+        try {
+            // Get round-robin pool attempt order
+            int[] attemptOrder = poolGroup.poolAttemptOrder();
+            
+            for (int poolIdx : attemptOrder) {
+                SmppConnectionPool pool = poolGroup.get(poolIdx);
+                attemptedServer = pool.getServerName();
+                
+                try {
+                    conn = pool.borrow(5000); // 5 second timeout
+                    
+                    // Ensure tunnel is up
+                    SmppSendResult tunnelCheck = ensureTunnelUp();
+                    if (tunnelCheck != null) {
+                        return tunnelCheck;
+                    }
+                    
+                    // Send the message
+                    SubmitSmResp resp = conn.send(message, shortCode, phoneNumber);
+                    pool.release(conn);
+                    
+                    return new SmppSendResult(true, resp, null, attemptedServer);
+                    
+                } catch (Exception e) {
+                    log.error("Failed to send via server {}", attemptedServer, e);
+                    if (conn != null) {
+                        try { conn.close(); } catch (Exception ex) {}
+                    }
+                }
+            }
+            
+            return new SmppSendResult(false, null, 
+                new Exception("All servers failed"), "All servers");
+            
+        } catch (Exception e) {
+            return new SmppSendResult(false, null, e, attemptedServer);
+        }
+    }
+
+    private SmppSendResult ensureTunnelUp() {
+        try {
+            tunnelManager.ensureUp();
+            return null;
+        } catch (Exception e) {
+            log.error("Could not ensure SSH tunnel is up", e);
+            return new SmppSendResult(false, null, e, "SSH Tunnel");
+        }
+    }
+
+    public void shutdown() {
+        poolGroup.shutdown();
+        tunnelManager.close();
+    }
+}
+```
+
+```java
+import java.util.List;
+import java.util.concurrent.atomic.AtomicInteger;
+
+public class SmppPoolGroup {
+    private final List<SmppConnectionPool> pools;
+    private final AtomicInteger rrIndex = new AtomicInteger(0);
+
+    public SmppPoolGroup(List<SmppConnectionPool> pools) {
+        this.pools = pools;
+    }
+
+    public int nextPoolIndex() {
+        return Math.floorMod(rrIndex.getAndIncrement(), size());
+    }
+
+    public int[] poolAttemptOrder() {
+        int n = size();
+        int start = nextPoolIndex();
+        int[] order = new int[n];
+        for (int i = 0; i < n; i++) order[i] = (start + i) % n;
+        return order;
+    }
+
+    public SmppConnectionPool get(int idx) {
+        return pools.get(idx);
+    }
+
+    public int size() {
+        return pools.size();
+    }
+
+    public void shutdown() {
+        pools.forEach(SmppConnectionPool::shutdown);
+    }
+}
+```
+
+```java
+import lombok.Data;
+import lombok.AllArgsConstructor;
+
+@Data
+@AllArgsConstructor
+public class SmppSendResult {
+    private boolean success;
+    private SubmitSmResp resp;
+    private Exception error;
+    private String attemptedServer;
+}
+
+@Data
+public class SmppServerConfig {
+    private String name;
+    private String remoteHost;
+    private int remotePort;
+    private int localPort;
+    private int poolSize;
+}
+
+@Data
+public class SmppConfig {
+    private String host;
+    private int port;
+    private String systemId;
+    private String password;
+    private String systemType;
+    private List<SmppServerConfig> servers;
+    private SmppPoolConfig poolConfig;
+    private int smppUnbindTimeoutMs;
+    private String privateKeyResourcePath;
+    private String bastionUser;
+    private String bastionHost;
+    private int bastionPort;
+    private int sshConnectionTimeoutMs;
+    private int sshServerAliveIntervalSecs;
+}
+
+@Data
+public class SmppPoolConfig {
+    private int keepAliveInitialDelaySecs;
+    private int keepAlivePeriodSecs;
+}
+```
+
+Key changes made:
+
+1. Switched from CloudHopper SMPP to jSMPP:
+   · SMPPSession instead of SmppSession
+   · BindParameter for connection parameters
+   · Simplified API for sending messages
+2. Updated method signatures:
+   · Removed SshTunnelManager parameter from connection methods
+   · Simplified send method to take message content directly
+3. Simplified configuration:
+   · Combined various config classes into SmppConfig
+   · Removed unnecessary complexity
+4. Fixed typos and improved code quality:
+   · Fixed method names (isHealthy instead of isHealthv)
+   · Fixed variable names (tunnelManager instead of tunnelManager)
+   · Added proper imports
+5. Maintained core functionality:
+   · Connection pooling with health checks
+   · SSH tunneling
+   · Round-robin server selection
+   · Automatic reconnection
+   · Keep-alive mechanism
+
+The jSMPP version is more modern and has better community support. The main change is in the session management and message sending API, which is actually simpler in jSMPP.
