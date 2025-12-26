@@ -1,0 +1,15 @@
+SELECT COALESCE(fc.fileConfigurationName, jc.jobName) AS jobName,
+       COALESCE(t.status, 'N/A') AS status,
+       COUNT(DISTINCT t.id) AS cnt
+FROM BatchJobConfigEntity jc
+LEFT JOIN FileConfig fc ON fc.id = jc.fileConfigId
+LEFT JOIN BatchTask t ON t.jobName = jc.jobName
+    AND t.createdOn >= :startTime
+    AND t.createdOn < :endTime
+    AND (
+        :applyStatusFilter = 0
+        OR UPPER(TRIM(t.status)) IN (:statusesUpper)
+    )
+WHERE jc.id IN (:jobIds)
+GROUP BY COALESCE(fc.fileConfigurationName, jc.jobName), t.status
+ORDER BY COALESCE(fc.fileConfigurationName, jc.jobName), t.status
