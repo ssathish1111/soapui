@@ -1,0 +1,541 @@
+Yes, you can use your SmppPoolGroup class with the provided configuration. Here's the updated implementation that integrates the configuration and maintains your existing SmppPoolGroup class:
+
+```java
+import org.jsmpp.bean.*;
+import org.jsmpp.session.*;
+import org.jsmpp.extra.*;
+import org.jsmpp.session.connection.ConnectionFactory;
+import org.jsmpp.session.connection.socket.SocketConnectionFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.boot.context.properties.ConfigurationProperties;
+import org.springframework.context.annotation.Configuration;
+import lombok.Data;
+
+import java.io.File;
+import java.util.*;
+import java.util.concurrent.*;
+import java.util.concurrent.atomic.AtomicInteger;
+import javax.annotation.PreDestroy;
+
+// Configuration classes
+@Data
+@Configuration
+@ConfigurationProperties(prefix = "application.smpp-config")
+public class SmppConfigParameters {
+    private String bastionHost;
+    private int bastionPort;
+    private String bastionUser;
+    private String privateKeyResourcePath;
+    private int sshConnectionTimeoutMs;
+    private int sshServerAliveIntervalSecs;
+    private boolean smppHealthCheckEnabled;
+
+    private List<SmppServerConfig> servers = new ArrayList<>();
+
+    private int smppWindowSize;
+    private String systemId;
+    private String systemPassword;
+    private int smppBindTimeoutMs;
+    private int smppRequestExpiryTimeoutMs;
+    private int smppUnbindTimeoutMs;
+    private long smppSubmitTimeoutMs;
+
+    private int keepAliveInitialDelaySecs = 10;
+    private int keepAlivePeriodSecs = 30;
+}
+
+@Data
+public class SmppServerConfig {
+    private String name;
+    private String remoteHost;
+    private int remotePort;
+    private int localPort;
+    private int poolSize;
+}
+
+// SmppConnection class
+@Slf4j
+public class SmppConnection {
+    private final SMPPSession session;
+    private final SmppSessionConfiguration config;
+    private final int unbindTimeoutMs;
+    private final ConnectionFactory connectionFactory;
+    private volatile boolean isBound = false;
+
+    public SmppConnection(SmppSessionConfiguration config, int unbindTimeoutMs) {
+        this.config = config;
+        this.unbindTimeoutMs = unbindTimeoutMs;
+        this.connectionFactory = new SocketConnectionFactory();
+        this.session = new SMPPSession(connectionFactory);
+        
+        // Configure session listeners
+        session.setMessageReceiverListener(new MessageReceiverListenerImpl());
+        session.addSessionStateListener(new SessionStateListenerImpl());
+    }
+
+    public void open() throws Exception {
+        if (isHealthy()) return;
+        
+        try {
+            session.connectAndBind(
+                config.getHost(),
+                config.getPort(),
+                new BindParameter(
+                    BindType.BIND_TRX,
+                    config.getSystemId(),
+                    config.getPassword(),
+                    config.getSystemType(),
+                    TypeOfNumber.UNKNOWN,
+                    NumberingPlanIndicator.UNKNOWN,
+                    null
+                ),
+                config.getBindTimeoutMs()
+            );
+            isBound = true;
+            log.info("SMPP session bound: {}:{}", config.getHost(), config.getPort());
+        } catch (Exception e) {
+            isBound = false;
+            throw new Exception("Failed to bind SMPP session to " + config.getHost() + ":" + config.getPort(), e);
+        }
+    }
+
+    public void close() {
+        if (session != null && isBound) {
+            try {
+                session.unbindAndClose(unbindTimeoutMs);
+                log.info("SMPP session closed: {}:{}", config.getHost(), config.getPort());
+            } catch (Exception e) {
+                log.warn("Error closing SMPP session", e);
+            } finally {
+                isBound = false;
+            }
+        }
+    }
+
+    public boolean isHealthy() {
+        return session != null && isBound && session.getSessionState().isBound();
+    }
+
+    public SubmitSmResp sendSingle(SubmitSm submit, long timeoutMs, SshTunnelManager tunnelManager) throws Exception {
+        boolean didRetry = false;
+        Exception lastException = null;
+
+        do {
+            try {
+                if (!isHealthy()) throw new IllegalStateException("SMPP session not healthy");
+                
+                return session.submitShortMessage(
+                    submit.getServiceType(),
+                    submit.getSourceAddrTon(),
+                    submit.getSourceAddrNpi(),
+                    submit.getSourceAddr(),
+                    submit.getDestAddrTon(),
+                    submit.getDestAddrNpi(),
+                    submit.getDestAddress(),
+                    submit.getEsmClass(),
+                    submit.getProtocolId(),
+                    submit.getPriorityFlag(),
+                    submit.getScheduleDeliveryTime(),
+                    submit.getValidityPeriod(),
+                    submit.getRegisteredDelivery(),
+                    submit.getReplaceIfPresentFlag(),
+                    submit.getDataCoding(),
+                    submit.getSmDefaultMsgId(),
+                    submit.getShortMessage(),
+                    timeoutMs
+                );
+            } catch (Exception ex) {
+                lastException = ex;
+                close();
+                
+                if (!didRetry) {
+                    didRetry = true;
+                    tunnelManager.ensureUp();
+                    open();
+                } else {
+                    throw lastException;
+                }
+            }
+        } while (didRetry);
+        
+        throw new IllegalStateException("Unreachable: send() logic failed unexpectedly");
+    }
+
+    public SubmitMultiResp sendMultiple(SubmitMulti submitMulti, long timeoutMs, SshTunnelManager tunnelManager) throws Exception {
+        boolean didRetry = false;
+        Exception lastException = null;
+
+        do {
+            try {
+                if (!isHealthy()) throw new IllegalStateException("SMPP session not healthy");
+                
+                DestinationAddress[] destinations = submitMulti.getDestAddresses().stream()
+                    .map(addr -> new DestinationAddress(
+                        new Address(addr.getTon(), addr.getNpi(), addr.getAddress())
+                    ))
+                    .toArray(DestinationAddress[]::new);
+                
+                return session.submitMultiple(
+                    submitMulti.getServiceType(),
+                    submitMulti.getSourceAddrTon(),
+                    submitMulti.getSourceAddrNpi(),
+                    submitMulti.getSourceAddr(),
+                    destinations,
+                    submitMulti.getEsmClass(),
+                    submitMulti.getProtocolId(),
+                    submitMulti.getPriorityFlag(),
+                    submitMulti.getScheduleDeliveryTime(),
+                    submitMulti.getValidityPeriod(),
+                    submitMulti.getRegisteredDelivery(),
+                    submitMulti.getReplaceIfPresentFlag(),
+                    submitMulti.getDataCoding(),
+                    submitMulti.getSmDefaultMsgId(),
+                    submitMulti.getShortMessage(),
+                    timeoutMs
+                );
+            } catch (Exception ex) {
+                lastException = ex;
+                close();
+                
+                if (!didRetry) {
+                    didRetry = true;
+                    tunnelManager.ensureUp();
+                    open();
+                } else {
+                    throw lastException;
+                }
+            }
+        } while (didRetry);
+        
+        throw new IllegalStateException("Unreachable: sendMultiple() logic failed unexpectedly");
+    }
+
+    public void enquireLink() {
+        if (isHealthy()) {
+            try {
+                session.enquireLink(new EnquireLink(), 1000);
+            } catch (Exception e) {
+                log.error("EnquireLink failed: {}", e.getMessage());
+                if (e instanceof ResponseTimeoutException || e.getMessage().contains("Not bound")) {
+                    isBound = false;
+                }
+            }
+        }
+    }
+
+    private class SessionStateListenerImpl implements SessionStateListener {
+        @Override
+        public void onStateChange(SessionState newState, SessionState oldState, Object source) {
+            log.debug("Session state changed from {} to {}", oldState, newState);
+            if (!newState.isBound()) {
+                isBound = false;
+            }
+        }
+    }
+
+    private class MessageReceiverListenerImpl implements MessageReceiverListener {
+        @Override
+        public void onAcceptDeliverSm(DeliverSm deliverSm) throws ProcessRequestException {
+            // Handle incoming messages if needed
+        }
+
+        @Override
+        public DataSmResult onAcceptDataSm(DataSm dataSm, Session source) throws ProcessRequestException {
+            return null;
+        }
+    }
+}
+
+// Pool Factory Interface
+public interface PoolFactory {
+    SmppConnection create() throws Exception;
+}
+
+// SmppConnectionPool class
+@Slf4j
+public class SmppConnectionPool {
+    private final String serverName;
+    private final BlockingQueue<SmppConnection> pool;
+    private final PoolFactory factory;
+    private final SmppConfigParameters config;
+    private final ScheduledExecutorService keepAliveScheduler;
+
+    public SmppConnectionPool(PoolFactory factory, int maxSize, String serverName, 
+                             SmppConfigParameters config) throws Exception {
+        this.pool = new LinkedBlockingQueue<>(maxSize);
+        this.serverName = serverName;
+        this.factory = factory;
+        this.config = config;
+        this.keepAliveScheduler = Executors.newSingleThreadScheduledExecutor();
+
+        for (int i = 0; i < maxSize; i++) {
+            SmppConnection conn = factory.create();
+            conn.open();
+            pool.offer(conn);
+        }
+        startKeepAliveTask();
+    }
+
+    private void startKeepAliveTask() {
+        int initialDelay = config.getKeepAliveInitialDelaySecs();
+        int period = config.getKeepAlivePeriodSecs();
+        
+        keepAliveScheduler.scheduleAtFixedRate(() -> {
+            log.debug("SMPP keepalive task running for server: {}", serverName);
+            for (SmppConnection conn : pool) {
+                try {
+                    if (conn.isHealthy()) {
+                        conn.enquireLink();
+                    }
+                } catch (Exception e) {
+                    log.error("Error during SMPP keepalive enquireLink", e);
+                }
+            }
+        }, initialDelay, period, TimeUnit.SECONDS);
+    }
+
+    public SmppConnection borrow(long timeout) throws InterruptedException {
+        SmppConnection conn = pool.poll(timeout, TimeUnit.MILLISECONDS);
+        if (conn == null) {
+            throw new RuntimeException("All SMPP connections for server " + serverName + " are busy");
+        }
+        
+        if (!conn.isHealthy()) {
+            conn.close();
+            try {
+                conn = factory.create();
+                conn.open();
+            } catch (Exception e) {
+                throw new RuntimeException("Failed to recreate SMPP connection for server " + serverName, e);
+            }
+        }
+        return conn;
+    }
+
+    public void release(SmppConnection conn, SshTunnelManager tunnelManager) {
+        if (conn.isHealthy()) {
+            if (!pool.offer(conn)) {
+                log.warn("Failed to return connection to pool for server: {}", serverName);
+                conn.close();
+            }
+        } else {
+            try {
+                conn.close();
+                tunnelManager.ensureUp();
+                SmppConnection newConn = factory.create();
+                newConn.open();
+                if (!pool.offer(newConn)) {
+                    log.warn("Failed to add new connection to pool for server: {}", serverName);
+                    newConn.close();
+                }
+            } catch (Exception e) {
+                log.error("Failed to replace broken SMPP connection", e);
+            }
+        }
+    }
+
+    public void shutdown() {
+        keepAliveScheduler.shutdown();
+        try {
+            if (!keepAliveScheduler.awaitTermination(5, TimeUnit.SECONDS)) {
+                keepAliveScheduler.shutdownNow();
+            }
+        } catch (InterruptedException e) {
+            keepAliveScheduler.shutdownNow();
+            Thread.currentThread().interrupt();
+        }
+        
+        for (SmppConnection conn : pool) {
+            conn.close();
+        }
+        pool.clear();
+    }
+
+    public boolean isHealthy() {
+        for (SmppConnection conn : pool) {
+            if (!conn.isHealthy()) return false;
+        }
+        return !pool.isEmpty();
+    }
+
+    public String getServerName() {
+        return serverName;
+    }
+}
+
+// SmppPoolGroup class (your existing class)
+@Slf4j
+public class SmppPoolGroup {
+    private final List<SmppConnectionPool> pools;
+    private final AtomicInteger rrIndex = new AtomicInteger(0);
+
+    public SmppPoolGroup(List<SmppConnectionPool> pools) {
+        this.pools = pools;
+    }
+
+    public int nextPoolIndex() {
+        return Math.floorMod(rrIndex.getAndIncrement(), size());
+    }
+
+    public int[] poolAttemptOrder() {
+        int n = size();
+        int start = nextPoolIndex();
+        int[] order = new int[n];
+        for (int i = 0; i < n; i++) {
+            order[i] = (start + i) % n;
+        }
+        return order;
+    }
+
+    public SmppConnectionPool get(int idx) {
+        return pools.get(idx);
+    }
+
+    public int size() {
+        return pools.size();
+    }
+
+    public void shutdown() {
+        pools.forEach(SmppConnectionPool::shutdown);
+    }
+}
+
+// Main SmppMessageSender class
+@Slf4j
+@Service
+public class SmppMessageSender {
+    private final SshTunnelManager tunnelManager;
+    private final SmppPoolGroup poolGroup;
+    private final SmppConfigParameters config;
+
+    public SmppMessageSender(SmppConfigParameters config) throws Exception {
+        this.config = config;
+        this.tunnelManager = new SshTunnelManager(config);
+        this.tunnelManager.open();
+
+        List<SmppConnectionPool> pools = new ArrayList<>();
+        for (SmppServerConfig server : config.getServers()) {
+            SmppSessionConfiguration smppCfg = buildSessionConfig(server, config);
+            
+            // Using lambda for PoolFactory
+            PoolFactory factory = () -> new SmppConnection(smppCfg, config.getSmppUnbindTimeoutMs());
+            
+            pools.add(new SmppConnectionPool(
+                factory, 
+                server.getPoolSize(), 
+                server.getName(), 
+                config
+            ));
+        }
+        
+        this.poolGroup = new SmppPoolGroup(pools);
+        log.info("SMPP Message Sender initialized with {} servers", pools.size());
+    }
+
+    // Send to single number
+    public SmppSendResult sendSms(NotificationContext ctx, String phoneNumber, String shortCode) {
+        return sendToNumbers(ctx, Collections.singletonList(phoneNumber), shortCode, false);
+    }
+
+    // Send to multiple numbers using SubmitMulti
+    public SmppSendResult sendBulkSms(NotificationContext ctx, List<String> phoneNumbers, String shortCode) {
+        return sendToNumbers(ctx, phoneNumbers, shortCode, true);
+    }
+
+    private SmppSendResult sendToNumbers(NotificationContext ctx, List<String> phoneNumbers, 
+                                        String shortCode, boolean useSubmitMulti) {
+        if (!config.isSmppHealthCheckEnabled()) {
+            throw new IllegalStateException("SMPP Health Check is disabled. Cannot send SMS.");
+        }
+        
+        int[] order = poolGroup.poolAttemptOrder();
+        Exception lastError = null;
+        
+        for (int idx : order) {
+            SmppConnectionPool pool = poolGroup.get(idx);
+            SmppConnection conn = null;
+            try {
+                conn = pool.borrow(config.getSmppSubmitTimeoutMs());
+                
+                SmppSendResult tunnelCheck = ensureTunnelUp();
+                if (tunnelCheck != null) return tunnelCheck;
+                
+                if (useSubmitMulti && phoneNumbers.size() > 1) {
+                    SubmitMulti submitMulti = buildSubmitMulti(ctx, phoneNumbers, shortCode);
+                    SubmitMultiResp resp = conn.sendMultiple(submitMulti, config.getSmppSubmitTimeoutMs(), tunnelManager);
+                    return new SmppSendResult(true, null, resp, null, pool.getServerName());
+                } else {
+                    SubmitSm submit = buildSubmitSm(ctx, phoneNumbers.get(0), shortCode);
+                    SubmitSmResp resp = conn.sendSingle(submit, config.getSmppSubmitTimeoutMs(), tunnelManager);
+                    return new SmppSendResult(true, resp, null, null, pool.getServerName());
+                }
+            } catch (Exception ex) {
+                lastError = ex;
+                log.error("Failed to send with server {}: {}", pool.getServerName(), ex.getMessage(), ex);
+            } finally {
+                if (conn != null) {
+                    pool.release(conn, tunnelManager);
+                }
+            }
+        }
+        return new SmppSendResult(false, null, null, lastError, "All pools failed");
+    }
+
+    private SubmitSm buildSubmitSm(NotificationContext ctx, String phoneNumber, String shortCode) {
+        log.debug("Preparing SubmitSm for phone number: {}, short code: {}", phoneNumber, shortCode);
+        
+        SubmitSm submit = new SubmitSm();
+        submit.setServiceType("");
+        submit.setSourceAddrTon(TypeOfNumber.INTERNATIONAL.value());
+        submit.setSourceAddrNpi(NumberingPlanIndicator.ISDN.value());
+        submit.setSourceAddr(shortCode);
+        submit.setDestAddrTon(TypeOfNumber.INTERNATIONAL.value());
+        submit.setDestAddrNpi(NumberingPlanIndicator.ISDN.value());
+        submit.setDestAddress(phoneNumber);
+        submit.setEsmClass(0);
+        submit.setProtocolId(0);
+        submit.setPriorityFlag(0);
+        submit.setScheduleDeliveryTime(null);
+        submit.setValidityPeriod(null);
+        submit.setRegisteredDelivery(SmppConstants.REGISTERED_DELIVERY_SMSC_RECEIPT_NOT_REQUESTED);
+        submit.setReplaceIfPresentFlag(0);
+        
+        var message = ctx.getRenderingResponse();
+        byte[] messageBytes = message.getBytes();
+        
+        if (messageBytes.length <= 255) {
+            submit.setShortMessage(messageBytes);
+            submit.setSmLength((byte) messageBytes.length);
+        } else {
+            submit.setShortMessage(new byte[0]);
+            submit.setSmLength((byte) 0);
+            submit.addOptionalParameter(new Tlv(SmppConstants.TAG_MESSAGE_PAYLOAD, messageBytes));
+        }
+        
+        submit.setDataCoding((byte) ctx.getDataCoding());
+        submit.setSmDefaultMsgId((byte) 0);
+        
+        return submit;
+    }
+
+    private SubmitMulti buildSubmitMulti(NotificationContext ctx, List<String> phoneNumbers, String shortCode) {
+        log.debug("Preparing SubmitMulti for {} phone numbers, short code: {}", phoneNumbers.size(), shortCode);
+        
+        SubmitMulti submitMulti = new SubmitMulti();
+        submitMulti.setServiceType("");
+        submitMulti.setSourceAddrTon(TypeOfNumber.INTERNATIONAL.value());
+        submitMulti.setSourceAddrNpi(NumberingPlanIndicator.ISDN.value());
+        submitMulti.setSourceAddr(shortCode);
+        submitMulti.setEsmClass(0);
+        submitMulti.setProtocolId(0);
+        submitMulti.setPriorityFlag(0);
+        submitMulti.setScheduleDeliveryTime(null);
+        submitMulti.setValidityPeriod(null);
+        submitMulti.setRegisteredDelivery(SmppConstants.REGISTERED_DELIVERY_SMSC_RECEIPT_NOT_REQUESTED);
+        submitMulti.setReplaceIfPresentFlag(0);
+        
+        List<DestinationAddress> destinations = new ArrayList<>();
+        for (String phoneNumber : phoneNumbers) {
+    
