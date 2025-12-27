@@ -778,3 +778,75 @@ public class SshTunnelManager {
         }
     }
 }
+
+
+HOW IT WORKS - SIMPLE ANALOGY:
+Think of it like ordering pizza delivery:
+
+Connection Pool = Pizza Delivery Fleet
+Each connection = One delivery driver
+
+Pool of 5 connections = 5 drivers on standby
+
+borrow() = Assign a driver to make delivery
+
+release() = Driver returns after delivery
+
+SSH Tunnel = Secure Delivery Tunnel
+Like a secret underground tunnel from your kitchen to pizza shop
+
+Makes delivery secure even over public internet
+
+Sending SMS = Making Pizza Delivery
+sendSms() = Order 1 pizza to 1 address
+
+sendBulkSms() = Order same pizza to many addresses at once
+
+Server fails? = Try next pizza shop (round-robin)
+
+Round-Robin = Trying Different Pizza Shops
+If Pizza Hut is busy/broken, try Domino's, then Papa John's, etc.
+
+Keep-Alive = Calling Driver Every 30 Minutes
+"Hey driver, you still there?" - Prevents drivers from going offline
+
+USAGE EXAMPLE:
+java
+// Send to one person
+SmppSendResult result = sender.sendSms(
+    context, 
+    "+1234567890", 
+    "12345"
+);
+
+if (result.isSuccess()) {
+    System.out.println("SMS sent via: " + result.getAttemptedServer());
+} else {
+    System.out.println("Failed: " + result.getError().getMessage());
+}
+
+// Send to many people at once
+List<String> numbers = Arrays.asList("+123", "+456", "+789");
+SmppSendResult bulkResult = sender.sendBulkSms(
+    context,
+    numbers,
+    "12345"
+);
+KEY FEATURES:
+Automatic Retry - If connection fails, tries once more
+
+Load Balancing - Spreads traffic across multiple servers
+
+Connection Pooling - Reuses connections (faster than creating new)
+
+Health Checks - Regular pings keep connections alive
+
+Bulk Sending - Send to thousands with one request
+
+SSH Security - Encrypted tunnel for security
+
+Fault Tolerance - If one server fails, uses another
+
+This response is AI-generated and for reference purposes only.
+
+
