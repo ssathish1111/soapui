@@ -1,0 +1,301 @@
+Looking at the code, I can see it's using Cloudhopper SMPP library. Here's the updated version using jSMPP library with proper imports and adjustments:
+
+```java
+import org.jsmpp.bean.*;
+import org.jsmpp.extra.ProcessRequestException;
+import org.jsmpp.session.SMPPSession;
+import org.jsmpp.session.SubmitSmResult;
+import org.jsmpp.bean.DeliveryReceipt;
+import org.jsmpp.bean.NumberingPlanIndicator;
+import org.jsmpp.bean.TypeOfNumber;
+import org.jsmpp.bean.RegisteredDelivery;
+import org.jsmpp.bean.ESMClass;
+import org.jsmpp.bean.DataCoding;
+import org.jsmpp.bean.OptionalParameter;
+import org.jsmpp.bean.OptionalParameters;
+import org.jsmpp.bean.MessagePayload;
+import org.jsmpp.session.SessionStateListener;
+import org.jsmpp.session.connection.Connection;
+import org.jsmpp.session.connection.socket.SocketConnection;
+
+import com.cogers.api.config.SmppConfigParameters;
+import com.cogers.api.model.NotificationContext;
+import jakarta.annotation.PreDestroy;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.stereotype.Service;
+
+import java.io.IOException;
+import java.util.ArrayList;
+import java.util.List;
+
+import static com.cogers.api.constants.ApplicationConstants.LOCAL_HOST;
+
+@Slf4j
+@Service
+public class SmppMessageSender {
+    private final SshTunnelManager tunnelManager;
+    private final SmppPoolGroup poolGroup;
+    private final SmppConfigParameters config;
+
+    public SmppMessageSender(SmppConfigParameters config) throws Exception {
+        this.config = config;
+        this.tunnelManager = new SshTunnelManager(config);
+        this.tunnelManager.open();
+
+        List<SmppConnectionPool> pools = new ArrayList<>();
+        for (SmppServerConfig server : config.getServers()) {
+            SmppSessionConfiguration smppCfg = buildSessionConfig(server, config);
+            SmppConnectionPool.PoolFactory factory = () ->
+                    new SmppConnection(smppCfg, config.getSmppUnbindTimeoutMs());
+            pools.add(new SmppConnectionPool(factory, server.getPoolSize(), server.getName(), config));
+        }
+        this.poolGroup = new SmppPoolGroup(pools);
+    }
+
+    private static SubmitSm buildSubmitSm(NotificationContext notificationContext,
+                                         String phoneNumber, String shortCode) {
+        log.debug("Preparing SubmitSm for phone number: {}, short code: {}", phoneNumber, shortCode);
+        
+        // Prepare addresses
+        Address sourceAddress = new Address(TypeOfNumber.INTERNATIONAL, 
+                                           NumberingPlanIndicator.ISDN, shortCode);
+        Address destAddress = new Address(TypeOfNumber.INTERNATIONAL, 
+                                         NumberingPlanIndicator.ISDN, phoneNumber);
+        
+        var message = notificationContext.getRenderingResponse();
+        byte[] messageBytes = message.getBytes();
+
+        // Create SubmitSm object
+        SubmitSm submit = new SubmitSm();
+        
+        // Set mandatory parameters
+        submit.setSourceAddr(sourceAddress.getAddress());
+        submit.setDestAddr(destAddress.getAddress());
+        submit.setSourceAddrTon(sourceAddress.getTon().value());
+        submit.setSourceAddrNpi(sourceAddress.getNpi().value());
+        submit.setDestAddrTon(destAddress.getTon().value());
+        submit.setDestAddrNpi(destAddress.getNpi().value());
+        
+        // Set registered delivery
+        submit.setRegisteredDelivery(RegisteredDelivery.SMSC_RECEIPT_NOT_REQUESTED.value());
+        
+        // Handle message length
+        if (messageBytes.length <= 255) {
+            submit.setShortMessage(messageBytes);
+            submit.setEsmClass(0); // Default ESM class
+        } else {
+            submit.setShortMessage(new byte[0]);
+            // For long messages, use message payload
+            submit.setEsmClass(0x40); // UDHI flag for concatenated messages
+            OptionalParameter.MessagePayload payload = 
+                new OptionalParameter.MessagePayload(messageBytes);
+            submit.setOptionalParameters(new OptionalParameter[]{payload});
+        }
+        
+        // Set data coding
+        submit.setDataCoding(message.getDataCoding().value());
+        
+        // Set protocol ID and priority
+        submit.setProtocolId(0);
+        submit.setPriorityFlag((byte) 0);
+        
+        // Set validity period if needed
+        // submit.setValidityPeriod("000003000000000R"); // Example: 3 minutes
+        
+        return submit;
+    }
+
+    private SmppSessionConfiguration buildSessionConfig(SmppServerConfig server, 
+                                                       SmppConfigParameters config) {
+        // In jSMPP, you typically configure the SMPPSession directly
+        // This method would return configuration parameters for session creation
+        SmppSessionConfiguration sessionConfig = new SmppSessionConfiguration();
+        sessionConfig.setName(server.getName());
+        sessionConfig.setType("TRANSMITTER");
+        sessionConfig.setHost(LOCAL_HOST);
+        sessionConfig.setPort(server.getLocalPort());
+        sessionConfig.setSystemId(config.getSystemId());
+        sessionConfig.setPassword(config.getSystemPassword());
+        sessionConfig.setBindTimeout(config.getSmppBindingTimeoutMs());
+        sessionConfig.setEnquireLinkTimer(config.getSmppEnquireLinkTimeoutMs());
+        sessionConfig.setTransactionTimer(config.getSmppRequestExpiryTimeoutMs());
+        sessionConfig.setWindowSize(config.getSmppWindowSize());
+        
+        return sessionConfig;
+    }
+
+    public SmppSendResult sendSms(NotificationContext ctx, String phoneNumber, String shortCode) {
+        if (!config.isSmppHealthCheckEnabled()) {
+            throw new IllegalStateException("SMPP Health Check is disabled. Cannot send SMS.");
+        }
+        
+        int[] order = poolGroup.poolAttemptOrder();
+        Exception lastError = null;
+        
+        for (int idx : order) {
+            SmppConnectionPool pool = poolGroup.get(idx);
+            SmppConnection conn = null;
+            
+            try {
+                conn = pool.borrow(1000);
+                SubmitSm submit = buildSubmitSm(ctx, phoneNumber, shortCode);
+                SmppSendResult e = ensureTunnelUp();
+                if (e != null) return e;
+                
+                // Send the message using jSMPP
+                SubmitSmResult submitResult = conn.getSession().submitShortMessage(
+                    submit.getServiceType(),
+                    submit.getSourceAddrTon(),
+                    submit.getSourceAddrNpi(),
+                    submit.getSourceAddr(),
+                    submit.getDestAddrTon(),
+                    submit.getDestAddrNpi(),
+                    submit.getDestAddr(),
+                    submit.getEsmClass(),
+                    submit.getProtocolId(),
+                    submit.getPriorityFlag(),
+                    submit.getScheduleDeliveryTime(),
+                    submit.getValidityPeriod(),
+                    submit.getRegisteredDelivery(),
+                    submit.getReplaceIfPresentFlag(),
+                    submit.getDataCoding(),
+                    submit.getSmDefaultMsgId(),
+                    submit.getShortMessage(),
+                    submit.getOptionalParameters()
+                );
+                
+                return new SmppSendResult(true, submitResult.getMessageId(), null, pool.serverName);
+                
+            } catch (Exception ex) {
+                lastError = ex;
+                log.error("Failed to send with server {}: {}", pool.serverName, 
+                         ex.getMessage() != null ? ex.getMessage() : ex.toString());
+            } finally {
+                if (conn != null) {
+                    pool.release(conn, tunnelManager);
+                }
+            }
+        }
+        return new SmppSendResult(false, null, lastError, "All pools failed");
+    }
+
+    private SmppSendResult ensureTunnelUp() {
+        try {
+            tunnelManager.ensureUp(); // open/re-open on demand!
+        } catch (Exception e) {
+            log.error("Could not ensure SSH tunnel is up", e);
+            return new SmppSendResult(false, null, e, "SSH Tunnel could not be established");
+        }
+        return null;
+    }
+
+    @PreDestroy
+    public void shutdown() {
+        poolGroup.shutdown();
+        tunnelManager.close();
+    }
+}
+
+// Supporting classes for jSMPP
+class SmppConnection {
+    private SMPPSession session;
+    private SmppSessionConfiguration config;
+    private long unbindTimeoutMs;
+    
+    public SmppConnection(SmppSessionConfiguration config, long unbindTimeoutMs) throws Exception {
+        this.config = config;
+        this.unbindTimeoutMs = unbindTimeoutMs;
+        initializeSession();
+    }
+    
+    private void initializeSession() throws Exception {
+        Connection connection = new SocketConnection(config.getHost(), config.getPort());
+        session = new SMPPSession(connection);
+        
+        session.setEnquireLinkTimer(config.getEnquireLinkTimer());
+        session.setTransactionTimer(config.getTransactionTimer());
+        session.setWindowSize(config.getWindowSize());
+        
+        // Bind to SMSC
+        session.connectAndBind(
+            config.getSystemId(),
+            config.getPassword(),
+            config.getType().equals("TRANSCEIVER") ? "trx" : "tx",
+            TypeOfNumber.UNKNOWN,
+            NumberingPlanIndicator.UNKNOWN,
+            null,
+            config.getBindTimeout()
+        );
+    }
+    
+    public SMPPSession getSession() {
+        return session;
+    }
+    
+    public void close() {
+        if (session != null) {
+            try {
+                session.unbindAndClose();
+            } catch (Exception e) {
+                log.error("Error closing SMPP session", e);
+            }
+        }
+    }
+}
+
+class SmppSessionConfiguration {
+    private String name;
+    private String type;
+    private String host;
+    private int port;
+    private String systemId;
+    private String password;
+    private long bindTimeout;
+    private long enquireLinkTimer;
+    private long transactionTimer;
+    private int windowSize;
+    
+    // Getters and setters
+    public String getName() { return name; }
+    public void setName(String name) { this.name = name; }
+    
+    public String getType() { return type; }
+    public void setType(String type) { this.type = type; }
+    
+    public String getHost() { return host; }
+    public void setHost(String host) { this.host = host; }
+    
+    public int getPort() { return port; }
+    public void setPort(int port) { this.port = port; }
+    
+    public String getSystemId() { return systemId; }
+    public void setSystemId(String systemId) { this.systemId = systemId; }
+    
+    public String getPassword() { return password; }
+    public void setPassword(String password) { this.password = password; }
+    
+    public long getBindTimeout() { return bindTimeout; }
+    public void setBindTimeout(long bindTimeout) { this.bindTimeout = bindTimeout; }
+    
+    public long getEnquireLinkTimer() { return enquireLinkTimer; }
+    public void setEnquireLinkTimer(long enquireLinkTimer) { this.enquireLinkTimer = enquireLinkTimer; }
+    
+    public long getTransactionTimer() { return transactionTimer; }
+    public void setTransactionTimer(long transactionTimer) { this.transactionTimer = transactionTimer; }
+    
+    public int getWindowSize() { return windowSize; }
+    public void setWindowSize(int windowSize) { this.windowSize = windowSize; }
+}
+```
+
+Key changes made for jSMPP:
+
+1. Imports: Changed from Cloudhopper to jSMPP imports
+2. SubmitSm creation: Using jSMPP's SubmitSm class with proper parameter setting
+3. Address handling: Using TypeOfNumber and NumberingPlanIndicator enums from jSMPP
+4. Session creation: Using SMPPSession from jSMPP with proper binding
+5. Message sending: Using submitShortMessage method with all required parameters
+6. Optional parameters: Using jSMPP's OptionalParameter classes
+7. Session configuration: Updated to match jSMPP's configuration needs
+
+You'll need to adjust the SmppConnectionPool and SmppPoolGroup classes to work with the new jSMPP-based SmppConnection class.
